@@ -84,10 +84,17 @@ function Write-Section {
 $projectRoot = $PSScriptRoot
 $vscodeDir   = Join-Path $projectRoot '.vscode'
 
+# 取得 git tag 版本號（含 dirty 狀態編碼，格式範例：v1.2-3-gabcdef-dirty）
+$gitVersion = 'v1.0'
+try {
+    $gitDescribe = & git describe --tags --always --dirty 2>$null
+    if ($LASTEXITCODE -eq 0 -and $gitDescribe) { $gitVersion = $gitDescribe.Trim() }
+} catch {}
+
 Write-Host ""
-Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║   VSCode 本機 AI 知識庫初始化工具 v1.0      ║" -ForegroundColor Cyan
-Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host "══════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host "     VSCode 本機 AI 知識庫初始化工具 $gitVersion       " -ForegroundColor Cyan
+Write-Host "══════════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "專案根目錄 : $projectRoot"
 Write-Host "知識庫目錄 : $vscodeDir"
@@ -338,9 +345,7 @@ $startTaskContent = @'
 name: start-task
 description: "Use when: 開始新任務、start task、載入知識庫、task start。每次對話開始時執行，讓 AI 讀取撰寫規範與專案架構知識庫"
 agent: agent
-tools:
-  - search/codebase
-  - edit/editFiles
+tools:[vscode, execute, read, agent, edit, search, web, browser, vscode.mermaid-chat-features/renderMermaidDiagram, cweijan.vscode-database-client2/dbclient-getDatabases, cweijan.vscode-database-client2/dbclient-getTables, cweijan.vscode-database-client2/dbclient-executeQuery, ms-azuretools.vscode-containers/containerToolsConfig, ms-python.python/getPythonEnvironmentInfo, ms-python.python/getPythonExecutableCommand, ms-python.python/installPythonPackage, ms-python.python/configurePythonEnvironment, vscjava.vscode-java-debug/debugJavaApplication, vscjava.vscode-java-debug/setJavaBreakpoint, vscjava.vscode-java-debug/debugStepOperation, vscjava.vscode-java-debug/getDebugVariables, vscjava.vscode-java-debug/getDebugStackTrace, vscjava.vscode-java-debug/evaluateDebugExpression, vscjava.vscode-java-debug/getDebugThreads, vscjava.vscode-java-debug/removeJavaBreakpoints, vscjava.vscode-java-debug/stopDebugSession, vscjava.vscode-java-debug/getDebugSessionInfo, todo]
 ---
 
 你是本專案的 AI 程式碼協作者。在回應任何任務需求之前，請嚴格依照以下步驟執行：
@@ -455,9 +460,7 @@ $endTaskContent = @'
 name: end-task
 description: "Use when: 任務完成後、end task、task end、更新知識庫、任務收尾。任務結束時執行以更新本機知識庫並完成收尾"
 agent: agent
-tools:
-  - search/codebase
-  - edit/editFiles
+tools:[vscode, execute, read, agent, edit, search, web, browser, vscode.mermaid-chat-features/renderMermaidDiagram, cweijan.vscode-database-client2/dbclient-getDatabases, cweijan.vscode-database-client2/dbclient-getTables, cweijan.vscode-database-client2/dbclient-executeQuery, ms-azuretools.vscode-containers/containerToolsConfig, ms-python.python/getPythonEnvironmentInfo, ms-python.python/getPythonExecutableCommand, ms-python.python/installPythonPackage, ms-python.python/configurePythonEnvironment, vscjava.vscode-java-debug/debugJavaApplication, vscjava.vscode-java-debug/setJavaBreakpoint, vscjava.vscode-java-debug/debugStepOperation, vscjava.vscode-java-debug/getDebugVariables, vscjava.vscode-java-debug/getDebugStackTrace, vscjava.vscode-java-debug/evaluateDebugExpression, vscjava.vscode-java-debug/getDebugThreads, vscjava.vscode-java-debug/removeJavaBreakpoints, vscjava.vscode-java-debug/stopDebugSession, vscjava.vscode-java-debug/getDebugSessionInfo, todo]
 ---
 
 任務即將收尾。請依序完成以下步驟，每步驟完成後才進入下一步：
@@ -643,9 +646,7 @@ Write-Section "建立 prompts/update-kb.prompt.md"
 $updateKbContent = @'
 ---
 agent: agent
-tools:
-  - search/codebase
-  - edit/editFiles
+tools:[vscode, execute, read, agent, edit, search, web, browser, vscode.mermaid-chat-features/renderMermaidDiagram, cweijan.vscode-database-client2/dbclient-getDatabases, cweijan.vscode-database-client2/dbclient-getTables, cweijan.vscode-database-client2/dbclient-executeQuery, ms-azuretools.vscode-containers/containerToolsConfig, ms-python.python/getPythonEnvironmentInfo, ms-python.python/getPythonExecutableCommand, ms-python.python/installPythonPackage, ms-python.python/configurePythonEnvironment, vscjava.vscode-java-debug/debugJavaApplication, vscjava.vscode-java-debug/setJavaBreakpoint, vscjava.vscode-java-debug/debugStepOperation, vscjava.vscode-java-debug/getDebugVariables, vscjava.vscode-java-debug/getDebugStackTrace, vscjava.vscode-java-debug/evaluateDebugExpression, vscjava.vscode-java-debug/getDebugThreads, vscjava.vscode-java-debug/removeJavaBreakpoints, vscjava.vscode-java-debug/stopDebugSession, vscjava.vscode-java-debug/getDebugSessionInfo, todo]
 description: 掃描專案並由 AI 互動式更新 .vscode/kb/architecture.md
 ---
 你是一位熟悉專案架構的 AI 助理。請先完整閱讀規則指南，再依步驟執行。
@@ -701,9 +702,9 @@ Write-Utf8File -Path (Join-Path $vscodeDir 'prompts\update-kb.prompt.md') -Conte
 # 完成提示
 # ─────────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Green
-Write-Host "║           初始化完成！                       ║" -ForegroundColor Green
-Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Green
+Write-Host "══════════════════════════════════" -ForegroundColor Green
+Write-Host "           初始化完成！            " -ForegroundColor Green
+Write-Host "══════════════════════════════════" -ForegroundColor Green
 Write-Host ""
 Write-Host "後續步驟：" -ForegroundColor White
 Write-Host "  1. 在 VSCode Copilot Chat 輸入 '/' 並選擇 'start-task'" -ForegroundColor Gray
