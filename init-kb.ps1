@@ -1,35 +1,44 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    VSCode 本機 AI 知識庫初始化腳本
+    VS Code 本機 AI 知識庫初始化腳本（v3：4 層階梯 + facets + topics + FTS5）
 
 .DESCRIPTION
-    在 .vscode/ 目錄下建立 AI 撰寫規範與專案架構知識庫模板，
-    並設定 VSCode Copilot Chat 的提示詞位置。
+    在專案 .vscode/ 目錄下建立可隨知識量擴張的結構化 AI 協作知識庫：
 
-    建立的目錄結構：
-        init-kb.ps1                    (本腳本，放在專案根目錄)
         .vscode/
-        ├── settings.json          (VSCode Copilot 提示詞位置設定)
-        ├── kb/
-        │   ├── coding-rules.md   (AI 撰寫規範 — 通用)
-        │   └── architecture.md   (專案架構摘要)
-        └── prompts/
-            ├── start-task.prompt.md  (/start-task 指令)
-            └── end-task.prompt.md    (/end-task 指令)
+        ├── settings.json                     ← Copilot prompt 路徑設定
+        ├── copilot-instructions.md           ← 單一規範來源（SSOT）
+        ├── start-task.prompt.md              ← 任務啟動：4 層階梯讀取
+        ├── start-plan.prompt.md              ← Plan 模式：讀取 → 計劃 → 等待確認
+        ├── end-task.prompt.md                ← 任務結束：更新 KB + commit 訊息
+        └── knowledge/
+            ├── INDEX.md                      ← <80 行純導航
+            ├── changelog/{YYYY-MM}.md        ← 當月變更歷程
+            ├── modules/                      ← 各模組 quickref（使用者自填）
+            ├── traps/
+            │   ├── topics-taxonomy.yml       ← 主題白名單
+            │   ├── topics/                   ← 主題集群（rebuild 自動產生）
+            │   └── trap-NNN.md               ← 陷阱片段（new-trap 自動產生）
+            └── scripts/
+                └── kb.mjs                    ← v3 CLI（FTS 採 node:sqlite）
 
-    知識庫檔案儲存於 .vscode/（已在 .gitignore 中，不上傳 git）。
-    腳本本身放在專案根目錄，可直接以 .\init-kb.ps1 執行。
+    特色：
+      - 主題化（topics）：把同類踩坑歸類，避免 AI 在 N 個 trap 中盲掃
+      - Facet 索引（by-module/tag/topic/file/symptom.json）：精準切片
+      - SQLite FTS5 全文檢索：BM25 排序 + snippet 預覽（需 Node 22.5+）
+      - 編碼安全：全部 UTF-8 without BOM；CLI 內建 health 檢測 BOM/U+FFFD
 
 .NOTES
     執行方式（在專案根目錄）：
         .\init-kb.ps1
 
-    若 .vscode 目錄不存在，腳本會自動建立。
-    已存在的檔案預設不覆蓋（加 -Force 強制覆蓋）。
+    Node 版本要求：
+      - 16+：rebuild / new-trap / facets / topics / health 全部可用
+      - 22.5+：SQLite FTS5 全文檢索（kb.mjs search）才會啟用，否則優雅降級
 
 .PARAMETER Force
-    若指定，覆蓋已存在的知識庫檔案（不覆蓋 settings.json）。
+    覆蓋已存在的知識庫檔案（settings.json 永遠不覆蓋）。
 #>
 
 [CmdletBinding()]
@@ -40,7 +49,6 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# 強制 Console 輸出使用 UTF-8，避免中文亂碼
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -49,8 +57,6 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 # ─────────────────────────────────────────────────────────────
 
 function Write-Utf8File {
-    <#
-    .SYNOPSIS 以 UTF-8 NoBOM 寫入檔案（若父目錄不存在則自動建立）#>
     param(
         [string]$Path,
         [string]$Content,
@@ -61,7 +67,8 @@ function Write-Utf8File {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
     if ((Test-Path $Path) -and -not $Overwrite) {
-        Write-Host "  [略過] 已存在: $(Resolve-Path $Path -Relative 2>$null)" -ForegroundColor Yellow
+        $rel = $Path.Replace($projectRoot, '').TrimStart('\','/')
+        Write-Host "  [略過] 已存在: $rel" -ForegroundColor Yellow
         return
     }
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -80,24 +87,25 @@ function Write-Section {
 # 路徑設定
 # ─────────────────────────────────────────────────────────────
 
-# 不論腳本放在根目錄或 .vscode/ 下，一律將知識庫寫入 .vscode/ 子目錄
 $projectRoot = $PSScriptRoot
 $vscodeDir   = Join-Path $projectRoot '.vscode'
+$kbDir       = Join-Path $vscodeDir 'knowledge'
+$currentMonth = Get-Date -Format 'yyyy-MM'
 
-# 取得 git tag 版本號（含 dirty 狀態編碼，格式範例：v1.2-3-gabcdef-dirty）
-$gitVersion = 'v1.0'
+$gitVersion = 'v3.0'
 try {
     $gitDescribe = & git describe --tags --always --dirty 2>$null
     if ($LASTEXITCODE -eq 0 -and $gitDescribe) { $gitVersion = $gitDescribe.Trim() }
 } catch {}
 
 Write-Host ""
-Write-Host "══════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host "     VSCode 本機 AI 知識庫初始化工具 $gitVersion       " -ForegroundColor Cyan
-Write-Host "══════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host "════════════════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host "   VS Code 本機 AI 知識庫初始化工具 $gitVersion" -ForegroundColor Cyan
+Write-Host "   (v3 架構：4 層階梯 + facets + topics + FTS5)" -ForegroundColor Cyan
+Write-Host "════════════════════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "專案根目錄 : $projectRoot"
-Write-Host "知識庫目錄 : $vscodeDir"
+Write-Host "知識庫目錄 : $kbDir"
 Write-Host ""
 
 if ($Force) {
@@ -105,655 +113,1236 @@ if ($Force) {
 }
 
 # ─────────────────────────────────────────────────────────────
-# 1. settings.json（永遠不覆蓋，避免破壞使用者自訂設定）
+# 1. settings.json（永遠不覆蓋）
 # ─────────────────────────────────────────────────────────────
-Write-Section "建立 settings.json"
+Write-Section "1. settings.json（Copilot prompt 路徑）"
 
 $settingsPath = Join-Path $vscodeDir 'settings.json'
 if (-not (Test-Path $settingsPath)) {
     $settingsContent = @'
 {
   "chat.promptFilesLocations": {
-    ".vscode/prompts": true
+    ".vscode": true
   }
 }
 '@
     Write-Utf8File -Path $settingsPath -Content $settingsContent
 } else {
-    # 已存在：只確認必要 key 存在，不覆蓋整個檔案
     $existing = Get-Content $settingsPath -Raw -Encoding UTF8
     if ($existing -notmatch 'chat\.promptFilesLocations') {
         Write-Host "  [警告] settings.json 已存在但缺少 chat.promptFilesLocations 設定。" -ForegroundColor Yellow
         Write-Host "         請手動加入以下設定：" -ForegroundColor Yellow
-        Write-Host '         "chat.promptFilesLocations": { ".vscode/prompts": true }' -ForegroundColor Gray
+        Write-Host '         "chat.promptFilesLocations": { ".vscode": true }' -ForegroundColor Gray
     } else {
         Write-Host "  [略過] settings.json 已包含所需設定" -ForegroundColor Yellow
     }
 }
 
 # ─────────────────────────────────────────────────────────────
-# 2. kb/coding-rules.md — 通用 AI 撰寫規範
+# 2. .vscode/copilot-instructions.md（單一規範來源）
 # ─────────────────────────────────────────────────────────────
-Write-Section "建立 kb/coding-rules.md"
+Write-Section "2. copilot-instructions.md（單一規範來源 SSOT）"
 
-$codingRulesContent = @'
-# AI 程式碼撰寫規範
+$copilotInstructions = @'
+# GitHub Copilot 專案作業規範
 
-> 本檔案為 AI 程式碼協作的通用規範，適用於本專案所有對話階段。
-> 由 `init-kb.ps1` 建立，儲存於本機（不上傳 git）。
-
----
-
-## 一、核心設計原則
-
-### 1.1 SOLID 設計模式（必須遵守）
-
-| 原則 | 說明 | 違規範例（禁止） |
-|------|------|-----------------|
-| **S** — 單一職責 | 每個 class / function / 檔案只負責一件事 | 一個函式同時處理 HTTP 請求、資料驗證、資料庫寫入 |
-| **O** — 開放封閉 | 對擴充開放，對修改封閉；透過介面新增行為 | 每次加新功能就修改既有 if-else 鏈 |
-| **L** — 里氏替換 | 子型別可替換父型別，不破壞程式行為 | 覆寫方法後拋出原本不存在的例外 |
-| **I** — 介面隔離 | 介面小而精，不強迫實作用不到的方法 | 一個介面同時定義 20 個方法 |
-| **D** — 依賴反轉 | 依賴抽象（介面），不依賴具體實作 | Handler 直接 new 具體 DB 連線物件 |
-
-### 1.2 低耦合、高內聚、高隔離
-
-- **低耦合**：模組間只透過介面／合約溝通，避免直接依賴具體型別
-- **高內聚**：相關邏輯集中在同一 package／module，不相關的拆分至獨立模組
-- **高隔離**：外部依賴（HTTP、DB、檔案 IO、時間）必須透過可注入介面封裝
-
-### 1.3 絕對禁止事項
-
-- 禁止硬編碼常數、路徑、URL、連接埠、金鑰、Timeout 數值
-- 禁止將不相關邏輯堆疊在同一函式或檔案中
-- 禁止忽略錯誤（swallow errors）— 必須傳回或記錄
-- 禁止在程式流程中留下除錯用輸出（fmt.Println、console.log、print()）
-- 禁止重複邏輯（DRY 原則）— 必須提取為共用函式或介面
+> 此檔案為本專案的**單一規範真實來源**（Single Source of Truth），所有 prompt 檔案引用本檔而非重複定義。
 
 ---
 
-## 二、測試要求
+## 一、技術棧
 
-### 2.1 必備測試規則
-
-每次程式碼新增、修改或重構，都必須同步新增對應測試：
-
-| 測試類型 | 目的 | 驗收標準 |
-|----------|------|----------|
-| **單元測試** | 驗證單一函式／方法的邏輯 | 覆蓋正常路徑 + 邊界情況 + 錯誤路徑 |
-| **整合測試** | 驗證多個元件協作行為 | 模擬真實使用場景，外部依賴用 Fake |
-
-- 修改完成後必須完整執行所有測試，確保新舊程式碼功能皆正常
-- 不可因測試繁瑣而省略測試步驟
-
-### 2.2 測試品質規範
-
-- **命名格式**：`Test{被測函式}_{場景描述}_{預期結果}`
-  → 範例：`TestLogin_WhenPasswordEmpty_ReturnError`
-- **測試獨立**：每個測試案例不共享可變狀態，執行順序任意
-- **依賴替換**：使用 Fake / Stub / Mock 替換外部依賴，不發真實網路請求
-- **測試位置**：`<被測試檔案名>_test.<副檔名>` 放在同一目錄
+| 項目 | 版本 / 說明 |
+|------|------------|
+| 語言 | （請填入） |
+| 框架 | （請填入） |
+| 資料庫 | （請填入） |
+| 測試框架 | （請填入） |
 
 ---
 
-## 三、程式碼組織
+## 二、專案架構與命名慣例
 
-### 3.1 檔案結構
-
-- 同一職責的程式碼集中在同一檔案；一個檔案只做一件事
-- 共用工具函式、型別獨立成專屬模組
-- 設定值、常數集中管理，禁止散落於業務邏輯
-- 禁止把不相關的新功能堆疊進現有檔案
-
-### 3.2 命名規範
-
-| 對象 | 規則 | 範例 |
-|------|------|------|
-| 函式／方法 | 動詞開頭，描述行為 | ParseURL、validateInput、BuildReport |
-| 型別／類別 | 名詞，表達抽象概念 | HTTPClient、UserRepository |
-| 介面 | 名詞（Go 加 -er 後綴） | Runner、Dispatcher、Locator |
-| 常數 | 全大寫或 PascalCase（依語言慣例） | MaxRetries、DEFAULT_TIMEOUT |
-| 測試函式 | 描述被測函式 + 場景 + 預期結果 | TestDial_WhenTimeout_ReturnError |
+（請依專案性質填入：分層架構、命名慣例、路由前綴、主要功能模組）
 
 ---
 
-## 四、維護性要求
+## 三、知識庫管理協議（單一真實來源）
 
-### 4.1 可讀性
+### 知識庫結構 v3
 
-- 函式長度建議不超過 40 行；超過時拆分為更小的職責
-- 巢狀層數建議不超過 3 層；超過時使用 early return 或提取函式
-- 複雜邏輯必須有中文說明為什麼這麼做，而非描述做了什麼
+`.vscode/knowledge/`（建議加入 `.gitignore`）：
 
-### 4.2 臨時檔案清理
+    .vscode/knowledge/
+    ├── INDEX.md                          ← <80 行純導航（第 1 層，AI 啟動必讀）
+    ├── changelog/
+    │   └── YYYY-MM.md                    ← 變更歷程（按月封存，唯一來源）
+    ├── modules/                          ← 第 2 層：模組強制讀
+    │   └── {module}/quickref.md          ← <150 行；其餘細節分檔
+    ├── traps/
+    │   ├── topics-taxonomy.yml           ← 主題分類學白名單（人工維護）
+    │   ├── topics/
+    │   │   ├── INDEX.md                  ← 第 3 層：主題目錄（自動產生）
+    │   │   └── {slug}.md                 ← 第 4 層：主題集群（AUTO 區自動，防呆原則手動）
+    │   ├── trap-NNN.md                   ← 第 5 層：陷阱細節，YAML frontmatter
+    │   ├── index.jsonl                   ← 機器可讀大表（自動）
+    │   ├── by-module.json                ← facet：模組 → trap id 列表
+    │   ├── by-tag.json                   ← facet：tag → trap id 列表
+    │   ├── by-topic.json                 ← facet：主題 → trap id 列表
+    │   ├── by-file.json                  ← facet：原始碼檔 → trap id 列表（修 bug 必查）
+    │   ├── by-symptom.json               ← facet：症狀短語 → trap id 列表
+    │   └── fts.db                        ← SQLite FTS5 全文檢索（自動，gitignore）
+    └── scripts/
+        └── kb.mjs                        ← Node CLI（rebuild/new-trap/taxonomy/facets/topics/audit/search/health/...）
 
-- 開發過程中新增的一次性驗證腳本、暫時測試檔，任務結束前必須移除
-- 移除前必須確認：該檔案與主程式流程及正式測試無關
-- 若不確定是否可移除，詢問使用者後再操作
+> 詳情見 `.vscode/knowledge/INDEX.md`。
+
+### 任務開始前（4 層階梯讀取）
+
+1. 讀 [INDEX.md](knowledge/INDEX.md)（< 80 行）
+2. 依任務讀 `modules/{m}/quickref.md`（< 150 行）
+3. 讀 [traps/topics/INDEX.md](knowledge/traps/topics/INDEX.md)（主題目錄，掌握「這類問題以前發生過幾次」）
+4. 命中相關主題 → 讀 `traps/topics/{slug}.md`（含相關 trap 表 + 防呆原則）
+5. 必要時讀 `traps/trap-NNN.md`（細節）
+
+替代/補充查詢：
+
+- 模糊查詢 / 全文檢索：`node .vscode/knowledge/scripts/kb.mjs search "<關鍵字>"`
+- 「我要修這個檔，以前踩過什麼坑？」→ 直接查 `traps/by-file.json`
+- 其他 facet：`by-{module,tag,topic,symptom}.json`
+
+向用戶回報：涉及模組、命中主題（topic slug）、命中陷阱編號、待探索範圍。
+
+### 任務結束後
+
+依以下固定順序執行，不得跳過：
+
+1. **輸出 commit 訊息**（見下方「Commit 訊息格式」）
+2. **新增/更新 trap fragment**：
+   - 新陷阱：
+
+         node .vscode/knowledge/scripts/kb.mjs new-trap `
+           --module=X --title="..." `
+           --topics=slug1,slug2 `
+           --symptoms="症狀A;症狀B" `
+           --files=path.ext --tests=tests/...
+
+     再編輯生成的 `traps/trap-NNN.md` 補完症狀/根因/修正/測試
+   - 既有陷阱補充：直接編輯對應 `traps/trap-NNN.md`，必要時更新 `topics:` / `symptoms:`
+3. **若需新主題 slug** → 編輯 `traps/topics-taxonomy.yml` 新增條目（slug / name / desc / keywords）
+4. **若主題防呆原則需更新** → 編輯 `traps/topics/{slug}.md` 的 `<!-- AUTO_END -->` 以下段落（AUTO 區會被覆寫，不要動）
+5. **更新模組知識**（若涉及商務規則或設計變更）：編輯 `modules/{m}/quickref.md` 或細節分檔
+6. **更新當月 changelog**：在 `changelog/YYYY-MM.md` 最上方新增一行 `| 日期 | 模組 | 摘要 | 異動檔案 | 備註 |`
+7. **重建索引並體檢**：
+
+       node .vscode/knowledge/scripts/kb.mjs rebuild
+       node .vscode/knowledge/scripts/kb.mjs health
+
+   `rebuild` 會自動：重建 `index.jsonl` + 5 種 facet JSON + `topics/{slug}.md` AUTO 區 + `fts.db`。
+   `health` 必須 0 errors 才算結束。
+
+> Token 不足時**優先保留 commit 訊息**，知識庫更新可下一 turn 補做。
+
+### Commit 訊息格式（唯一定義）
+
+以純文字段落輸出，禁止放入 fenced code block：
+
+    {type}({模組}) 摘要說明
+
+    問題:
+    - 逐條說明
+
+    變更:
+    - 逐條說明
+
+    測試:（僅撰寫測試時才提供）
+    - 逐條說明
+
+type 選項：`feat` / `fix` / `hotfix` / `refactor` / `chore` / `docs`
+
+### 檔案編碼規範（防亂碼）
+
+- 所有知識庫檔案必須為 **UTF-8 without BOM**
+- 使用 VS Code 編輯器直接儲存，或透過 Node `fs.writeFileSync(..., 'utf8')`
+- **禁止** PowerShell `Set-Content` / `Get-Content | Set-Content` / `(Get-Content) -replace`（以 CP950 覆寫，中文永久損毀）
+- 健康度檢查：`node .vscode/knowledge/scripts/kb.mjs health`
+
+### Trap fragment 格式（v3）
+
+每筆 trap 為獨立檔案 `traps/trap-NNN.md`，固定 YAML frontmatter：
+
+    ---
+    id: 1
+    title: 一句話摘要（< 80 字）
+    module: SomeModule
+    topics: [slug-a, slug-b]                              # 必填，必須在 topics-taxonomy.yml 白名單內
+    symptoms:                                              # 可選，每筆症狀短語（協助 by-symptom 索引）
+      - 症狀短語 A
+      - 症狀短語 B
+    related: [12, 34]                                      # 相關 trap id
+    date: 2026-04-22
+    status: fixed          # fixed | open | archived
+    severity: bug          # bug | design | perf | doc
+    tags: [tag-a]
+    files:
+      - src/path/to/file.ext
+    tests:
+      - tests/path/to/test.ext
+    ---
+
+    ## 症狀
+    ## 根因
+    ## 修正
+    ## 測試
+
+衍生產物（`index.jsonl` / `by-*.json` / `topics/{slug}.md` AUTO 區 / `fts.db`）由 `kb.mjs rebuild` 自動生成，**禁止手動編輯**。
+
+### 禁止行為
+
+1. 禁止 PowerShell `Set-Content` 寫入知識庫（CP950 編碼會永久毀掉中文）
+2. 禁止在回應中使用 fenced code block 提供 SQL/程式碼（VS Code Chat 視窗會隱藏）
+3. 禁止手動編輯 `traps/index.jsonl`、`by-*.json`、`topics/{slug}.md` 的 AUTO 區、`fts.db`（會被 rebuild 覆寫）
+4. 新增 trap 必須走 `kb.mjs new-trap`（自動取下一個 id，避免衝突；自動校驗 topics 白名單）
+5. 禁止使用未登記於 `topics-taxonomy.yml` 的 topic slug
 
 ---
 
-## 五、AI 回應規範
+## 四、測試規範
 
-- 所有回覆內容必須以繁體中文撰寫
-- 程式碼中的識別碼以英文命名；程式碼中的註解可使用中文
-- 主動提示潛在的設計缺陷，不要只做使用者問到的部分
+（請依語言 / 框架填入：測試層次、命名慣例、執行指令）
 
-### 5.1 Commit 訊息格式
-
-```
-{feat/fix/hotfix/refactor/chore/docs/test}({模組名}) 摘要說明（繁中）
-
-問題:
-{問題說明}
-
-變更:
-{變更說明}
-
-測試:
-{測試說明（有測試時才提供）}
-```
+每次修改或新增功能，必須同步撰寫對應的測試。
 '@
 
-Write-Utf8File -Path (Join-Path $vscodeDir 'kb\coding-rules.md') -Content $codingRulesContent -Overwrite:$Force
+Write-Utf8File -Path (Join-Path $vscodeDir 'copilot-instructions.md') -Content $copilotInstructions -Overwrite:$Force
 
 # ─────────────────────────────────────────────────────────────
-# 3. kb/architecture.md — 初始空白模板
+# 3. .vscode/start-task.prompt.md
 # ─────────────────────────────────────────────────────────────
-Write-Section "建立 kb/architecture.md（初始模板）"
+Write-Section "3. start-task.prompt.md"
 
-$archTemplatePath = Join-Path $vscodeDir 'kb\architecture.md'
-
-$archTemplate = @'
-# 專案架構知識庫
-
-> 本檔案由 `init-kb.ps1` 初始化，儲存於本機（不上傳 git）。
-> 請完善各欄位，或重新執行根目錄的 init-kb.ps1 並選擇掃描選項以自動填充基本資訊。
-> 每次任務結束後，透過 `/end-task` 讓 AI 協助更新「已知雷區與決策紀錄」章節。
-
----
-
-## 專案基本資訊
-
-- **專案名稱**：（請填入）
-- **技術棧**：（請填入，e.g. Go 1.24、React 18、Python 3.12）
-- **模組 / 套件名稱**：（請填入）
-- **主要功能描述**：（請填入）
-- **儲存庫 URL**：（請填入）
-
----
-
-## 目錄結構
-
-```
-（請填入，或執行根目錄的 init-kb.ps1 並選擇掃描選項以自動生成）
-```
-
----
-
-## 模組 / Package 職責
-
-| 模組 / 目錄 | 職責說明 |
-|-------------|----------|
-| （請填入）  | （請填入） |
-
----
-
-## Build / Test 指令
-
-```bash
-# 建置
-（請填入）
-
-# 執行全套測試
-（請填入）
-
-# Lint / Vet / Format
-（請填入）
-```
-
----
-
-## 慣例與規範（專案特定）
-
-- （請填入，e.g. 禁止 package A import package B、命名特例、依賴方向規則）
-
----
-
-## 重要介面 / API 端點
-
-- （請填入核心介面定義、REST API 端點、重要資料結構）
-
----
-
-## 已知雷區與決策紀錄
-
-| 日期 | 類型 | 說明 |
-|------|------|------|
-| （由 /end-task 填入） | 決策 / 雷區 | （說明） |
-'@
-
-Write-Utf8File -Path $archTemplatePath -Content $archTemplate -Overwrite:$Force
-
-# ─────────────────────────────────────────────────────────────
-# 4. prompts/start-task.prompt.md
-# ─────────────────────────────────────────────────────────────
-Write-Section "建立 prompts/start-task.prompt.md"
-
-$startTaskContent = @'
----
-name: start-task
-description: "Use when: 開始新任務、start task、載入知識庫、task start。每次對話開始時執行，讓 AI 讀取撰寫規範與專案架構知識庫"
-agent: agent
-tools:[vscode, execute, read, agent, edit, search, web, browser, vscode.mermaid-chat-features/renderMermaidDiagram, cweijan.vscode-database-client2/dbclient-getDatabases, cweijan.vscode-database-client2/dbclient-getTables, cweijan.vscode-database-client2/dbclient-executeQuery, ms-azuretools.vscode-containers/containerToolsConfig, ms-python.python/getPythonEnvironmentInfo, ms-python.python/getPythonExecutableCommand, ms-python.python/installPythonPackage, ms-python.python/configurePythonEnvironment, vscjava.vscode-java-debug/debugJavaApplication, vscjava.vscode-java-debug/setJavaBreakpoint, vscjava.vscode-java-debug/debugStepOperation, vscjava.vscode-java-debug/getDebugVariables, vscjava.vscode-java-debug/getDebugStackTrace, vscjava.vscode-java-debug/evaluateDebugExpression, vscjava.vscode-java-debug/getDebugThreads, vscjava.vscode-java-debug/removeJavaBreakpoints, vscjava.vscode-java-debug/stopDebugSession, vscjava.vscode-java-debug/getDebugSessionInfo, todo]
----
-
-你是本專案的 AI 程式碼協作者。在回應任何任務需求之前，請嚴格依照以下步驟執行：
-
----
-
-## 步驟 1：載入知識庫
-
-請使用工具讀取以下兩個本機知識庫檔案的完整內容，不可省略：
-
-1. **程式撰寫規範** → `.vscode/kb/coding-rules.md`
-2. **專案架構摘要** → `.vscode/kb/architecture.md`
-
----
-
-## 步驟 2：確認並摘要（以繁體中文回覆）
-
-讀取完畢後，輸出以下結構：
-
-### 已載入的核心規範（列出最重要的 5 條）
-
-（從 coding-rules.md 提取最重要的規則，條列說明）
-
-### 專案上下文快照
-
-- **專案名稱 / 技術棧**：（從 architecture.md 提取）
-- **主要模組與職責**：（從 architecture.md 提取，若未填寫請說明）
-- **Build / Test 指令**：（從 architecture.md 提取，若未填寫請說明）
-
-> 若 `architecture.md` 尚未填入任何內容，請提醒使用者：
-> 「架構知識庫尚未建立，建議先在專案根目錄執行 `.\init-kb.ps1` 並選擇掃描選項，或手動填寫 `.vscode\kb\architecture.md`。」
-
----
-
-## 步驟 3：準備就緒
-
-完成上述摘要後，說：
-
-> 「知識庫已載入完畢。本次對話我將遵守 coding-rules.md 中的所有規範，並以繁體中文回覆。請告訴我本次任務的需求。」
-
----
-
-## 步驟 4：執行任務
-
-接收使用者的任務需求並完整實作。
-
----
-
-## 步驟 5：任務收尾（每次完成修改後自動執行，無需使用者提示）
-
-**每當完成一個任務的所有程式碼修改後，立即依序執行以下收尾步驟：**
-
-### 5-1：本次任務摘要
-
-請以繁體中文列出：
-
-1. **已完成的工作**
-   - 修改了哪些檔案（列出路徑）
-   - 新增了哪些功能、邏輯或修正了哪些 Bug
-
-2. **執行的測試**
-   - 新增了哪些測試（測試名稱與測試目的）
-   - 所有測試是否通過
-
-3. **尚未完成的事項**（若有，說明原因）
-
-### 5-2：臨時檔案確認
-
-請確認並回覆：
-
-- 本次開發過程中是否產生了一次性驗證腳本或暫時測試檔案？
-- 若有，逐一列出完整路徑，並詢問使用者：「是否可以移除以下暫時檔案？」
-- 等待使用者確認後再執行刪除，不可自行決定
-
-### 5-3：知識庫更新
-
-1. 使用工具讀取 `.vscode/kb/architecture.md` 的現有完整內容
-2. 根據本次任務發現的新資訊（新模組職責、架構慣例、禁止事項、重要決策），提出具體的更新段落
-3. 顯示應加入「已知雷區與決策紀錄」資料表的新列（格式：`| 日期 | 類型 | 說明 |`）
-4. 詢問使用者：「是否要將以上更新寫入 `.vscode/kb/architecture.md`？」
-5. 使用者確認後，用工具將更新內容寫入檔案
-
-### 5-4：Commit 訊息
-
-根據本次變更，產生以下格式的 commit 訊息（整合在一個可直接複製的純文字區塊）：
-
-```
-{feat/fix/hotfix/refactor/chore/docs/test}({模組名}) 摘要說明（繁中）
-
-問題:
-{問題說明}
-
-變更:
-{變更說明}
-
-測試:
-{測試說明（有單元或整合測試時才提供）}
-```
-
-完成後說：「任務收尾完成。知識庫已更新，commit 訊息如上。」
-'@
-
-Write-Utf8File -Path (Join-Path $vscodeDir 'prompts\start-task.prompt.md') -Content $startTaskContent -Overwrite:$Force
-
-# ─────────────────────────────────────────────────────────────
-# 5. prompts/end-task.prompt.md
-# ─────────────────────────────────────────────────────────────
-Write-Section "建立 prompts/end-task.prompt.md"
-
-$endTaskContent = @'
----
-name: end-task
-description: "Use when: 任務完成後、end task、task end、更新知識庫、任務收尾。任務結束時執行以更新本機知識庫並完成收尾"
-agent: agent
-tools:[vscode, execute, read, agent, edit, search, web, browser, vscode.mermaid-chat-features/renderMermaidDiagram, cweijan.vscode-database-client2/dbclient-getDatabases, cweijan.vscode-database-client2/dbclient-getTables, cweijan.vscode-database-client2/dbclient-executeQuery, ms-azuretools.vscode-containers/containerToolsConfig, ms-python.python/getPythonEnvironmentInfo, ms-python.python/getPythonExecutableCommand, ms-python.python/installPythonPackage, ms-python.python/configurePythonEnvironment, vscjava.vscode-java-debug/debugJavaApplication, vscjava.vscode-java-debug/setJavaBreakpoint, vscjava.vscode-java-debug/debugStepOperation, vscjava.vscode-java-debug/getDebugVariables, vscjava.vscode-java-debug/getDebugStackTrace, vscjava.vscode-java-debug/evaluateDebugExpression, vscjava.vscode-java-debug/getDebugThreads, vscjava.vscode-java-debug/removeJavaBreakpoints, vscjava.vscode-java-debug/stopDebugSession, vscjava.vscode-java-debug/getDebugSessionInfo, todo]
----
-
-任務即將收尾。請依序完成以下步驟，每步驟完成後才進入下一步：
-
----
-
-## 步驟 1：本次任務摘要
-
-請以繁體中文列出：
-
-1. **已完成的工作**
-   - 修改了哪些檔案（列出路徑）
-   - 新增了哪些功能、邏輯或修正了哪些 Bug
-
-2. **執行的測試**
-   - 新增了哪些測試（測試名稱與測試目的）
-   - 所有測試是否通過
-
-3. **尚未完成的事項**（若有，說明原因）
-
----
-
-## 步驟 2：臨時檔案確認
-
-請確認並回覆：
-
-- 本次開發過程中是否產生了一次性驗證腳本或暫時測試檔案？
-- 若有，逐一列出完整路徑，並詢問使用者：「是否可以移除以下暫時檔案？」
-- 等待使用者確認後再執行刪除，不可自行決定
-
----
-
-## 步驟 3：知識庫更新
-
-1. 使用工具讀取 `.vscode/kb/architecture.md` 的現有完整內容
-2. 根據本次任務發現的新資訊（新模組職責、架構慣例、禁止事項、重要決策），提出具體的更新段落
-3. 顯示應加入「已知雷區與決策紀錄」資料表的新列（格式：`| 日期 | 類型 | 說明 |`）
-4. 詢問使用者：「是否要將以上更新寫入 `.vscode/kb/architecture.md`？」
-5. 使用者確認後，用工具將更新內容寫入檔案
-
----
-
-## 步驟 4：Commit 訊息
-
-根據本次變更，產生以下格式的 commit 訊息（整合在一個可直接複製的純文字區塊）：
-
-```
-{feat/fix/hotfix/refactor/chore/docs/test}({模組名}) 摘要說明（繁中）
-
-問題:
-{問題說明}
-
-變更:
-{變更說明}
-
-測試:
-{測試說明（有單元或整合測試時才提供）}
-```
-
----
-
-完成後說：「任務收尾完成。知識庫已更新，commit 訊息如上。」
-'@
-
-Write-Utf8File -Path (Join-Path $vscodeDir 'prompts\end-task.prompt.md') -Content $endTaskContent -Overwrite:$Force
-
-# ─────────────────────────────────────────────────────────────
-# 6. kb/kb-update-rules.md — update-kb 專用掃描與維護規則
-# ─────────────────────────────────────────────────────────────
-Write-Section "建立 kb/kb-update-rules.md"
-
-$kbUpdateRulesContent = @'
-# 知識庫更新規則指南
-
-> 本檔案供 AI 執行 `/update-kb` 時遵守，規範專案掃描方式、知識庫架構與維護規則。
-> 由 `init-kb.ps1` 建立，儲存於本機（不上傳 git）。
-
----
-
-## 一、專案掃描規則
-
-### 1.1 必須排除的目錄（不掃描）
-
-| 目錄 / 模式 | 排除原因 |
-|------------|---------|
-| `.git/` | 版控內部資料，非專案程式碼 |
-| `node_modules/` | 第三方依賴，非本專案原始碼 |
-| `vendor/` | Go vendor 目錄，第三方套件 |
-| `bin/`、`dist/`、`build/`、`out/` | 建置輸出，非原始碼 |
-| `.vscode/` | 編輯器設定與知識庫本身，避免循環讀取 |
-| `logs/`、`*.log` | 執行期日誌，非架構資訊 |
-| `__pycache__/`、`*.pyc` | Python 編譯快取 |
-| `.idea/`、`.DS_Store` | IDE / OS 產生的雜訊檔案 |
-| `coverage/`、`*.out`、`*.test` | 測試覆蓋率輸出 |
-| `tmp/`、`temp/` | 暫存目錄 |
-
-### 1.2 掃描深度規範
-
-- **目錄樹**：最大深度 **3 層**（避免過度展開導致輸出過長）
-- **原始碼讀取**：只讀取**主要進入點**（`main.go`、`index.ts`、`app.py`、`Program.cs`、`server.go`）與**介面定義檔**；不需逐一讀取所有實作檔案
-- **設定檔**：讀取第一層的 `Makefile`、`docker-compose.yml`、`Dockerfile` 即可，不深入子目錄
-
-### 1.3 技術棧偵測對應表
-
-| 偵測到的檔案 | 判斷技術棧 | 額外讀取目標 |
-|-------------|-----------|------------|
-| `go.mod` | Go | `go.sum` 的前 5 行（看主要依賴） |
-| `package.json` | Node.js / TypeScript | `tsconfig.json`（若存在） |
-| `pyproject.toml` 或 `requirements.txt` | Python | `pyproject.toml` 的 `[tool.poetry]` 段落 |
-| `Cargo.toml` | Rust | `Cargo.toml` 的 `[dependencies]` 段落 |
-| `pom.xml` | Java / Maven | `pom.xml` 的 `<dependencies>` 前 30 行 |
-| `build.gradle` | Java / Kotlin / Gradle | `build.gradle` 的 `dependencies` 區塊 |
-| `*.csproj` 或 `*.sln` | C# / .NET | `*.csproj` 的 `<PackageReference>` 列表 |
-| `Gemfile` | Ruby | `Gemfile` 完整內容 |
-| `composer.json` | PHP | `composer.json` 的 `require` 段落 |
-
----
-
-## 二、知識庫架構規範
-
-### 2.1 核心知識庫檔案（固定，`init-kb.ps1` 已建立，不可刪除）
-
-| 檔案 | 負責內容 |
-|------|---------|
-| `coding-rules.md` | 通用 AI 程式撰寫規範（不因專案而異） |
-| `architecture.md` | 本專案架構快照（目錄、模組、Build 指令、雷區紀錄） |
-| `kb-update-rules.md` | 本檔案；知識庫掃描、架構與維護規則 |
-
-### 2.2 何時應拆分額外 KB 檔案
-
-**預設優先把所有資訊填入 `architecture.md`**。只有同時符合以下兩個條件時才建立額外檔案：
-
-1. 該主題的資訊**超過 60 行**
-2. 該主題**獨立性高**，與架構概覽無直接關聯
-
-| 符合條件的情境 | 建議新增的 KB 檔案 | 負責內容 |
-|--------------|-----------------|---------|
-| REST / gRPC / GraphQL 端點超過 20 個 | `api-contracts.md` | 端點路由、請求/回應格式、認證方式 |
-| 多個獨立微服務各自有不同技術棧 | `services-overview.md` | 各服務名稱、職責、通訊方式、端口 |
-| 資料庫 Schema 複雜且需追蹤 migration 歷史 | `db-schema.md` | 資料表結構、關聯、索引、Migration 紀錄 |
-| 有明確的 CI/CD 或部署流程規範 | `deployment.md` | 環境變數、部署步驟、回滾程序 |
-
-> **原則**：只在資訊量確實超標時才拆分；拆分後須在 `architecture.md` 的對應章節加入指向新檔案的備註。
-
----
-
-## 三、`architecture.md` 各章節更新規則
-
-| 章節 | 可寫入的內容 | 更新策略 |
-|------|------------|---------|
-| 專案基本資訊 | 名稱、技術棧、模組路徑、功能描述 | **可覆蓋**（以最新掃描結果為準） |
-| 目錄結構 | 深度 2–3 的目錄樹（排除雜訊目錄） | **可覆蓋**（以最新掃描為準） |
-| 模組 / Package 職責 | 各目錄的職責說明 | **合併更新**（保留人工補充的說明，新增掃描到但尚未記錄的模組） |
-| Build / Test 指令 | build、test、lint、format 指令 | **可覆蓋**（以掃描到的腳本為準） |
-| 慣例與規範 | 專案特有的禁止事項、命名規則 | **只可新增，不可刪除** |
-| 重要介面 / API 端點 | 核心介面定義、REST 路由 | **合併更新** |
-| 已知雷區與決策紀錄 | 日期、類型、說明（表格列） | **絕對不可刪除任何既有列，只可新增** |
-
-### 3.1 永遠保留、不可覆蓋的內容
-
-- 「已知雷區與決策紀錄」表格中的**所有既有列**
-- 「慣例與規範」中**人工填寫**的條目
-- 任何章節末尾以 `> 備註：` 開頭的手動補充說明
-
----
-
-## 四、AI 執行 `/update-kb` 的行為規範
-
-1. **語言**：全程使用**繁體中文**
-2. **草稿先確認**：產生更新草稿後，必須先以條列方式摘要「新增了什麼」、「修改了什麼」，等使用者明確確認後才寫入檔案
-3. **不可靜默覆蓋**：任何現有內容的刪除或修改都必須明確告知使用者
-4. **無法判斷時詢問**：若某模組職責無法從目錄名稱或檔案內容推斷，應詢問使用者而非自行猜測
-5. **拆分前先詢問**：若判斷需要建立額外 KB 檔案，必須先向使用者說明原因並取得同意，再執行建立
-'@
-
-Write-Utf8File -Path (Join-Path $vscodeDir 'kb\kb-update-rules.md') -Content $kbUpdateRulesContent -Overwrite:$Force
-
-# ─────────────────────────────────────────────────────────────
-# 7. prompts/update-kb.prompt.md（AI 互動式知識庫更新指令）
-# ─────────────────────────────────────────────────────────────
-Write-Section "建立 prompts/update-kb.prompt.md"
-
-$updateKbContent = @'
+$startTaskPrompt = @'
 ---
 agent: agent
-tools:[vscode, execute, read, agent, edit, search, web, browser, vscode.mermaid-chat-features/renderMermaidDiagram, cweijan.vscode-database-client2/dbclient-getDatabases, cweijan.vscode-database-client2/dbclient-getTables, cweijan.vscode-database-client2/dbclient-executeQuery, ms-azuretools.vscode-containers/containerToolsConfig, ms-python.python/getPythonEnvironmentInfo, ms-python.python/getPythonExecutableCommand, ms-python.python/installPythonPackage, ms-python.python/configurePythonEnvironment, vscjava.vscode-java-debug/debugJavaApplication, vscjava.vscode-java-debug/setJavaBreakpoint, vscjava.vscode-java-debug/debugStepOperation, vscjava.vscode-java-debug/getDebugVariables, vscjava.vscode-java-debug/getDebugStackTrace, vscjava.vscode-java-debug/evaluateDebugExpression, vscjava.vscode-java-debug/getDebugThreads, vscjava.vscode-java-debug/removeJavaBreakpoints, vscjava.vscode-java-debug/stopDebugSession, vscjava.vscode-java-debug/getDebugSessionInfo, todo]
-description: 掃描專案並由 AI 互動式更新 .vscode/kb/architecture.md
+description: "開始新任務前，自動載入精簡知識庫並啟動問題分析流程"
 ---
-你是一位熟悉專案架構的 AI 助理。請先完整閱讀規則指南，再依步驟執行。
 
-## 步驟 1：載入知識庫與規則指南
+# 任務啟動：載入知識庫（4 層階梯）
 
-使用工具讀取以下三個檔案的**完整內容**，不可省略任何一個：
+> 規範定義於 `copilot-instructions.md`（單一真實來源），此 prompt 僅啟動讀取流程。
 
-1. `.vscode/kb/kb-update-rules.md` ← **掃描規則、架構規範、更新規則，執行前必讀**
-2. `.vscode/kb/architecture.md` ← 現有專案架構知識庫
-3. `.vscode/kb/coding-rules.md` ← 撰寫規範（用於了解專案品質要求）
+## 啟動步驟（依序執行）
 
-> 讀取完畢後，確認你已理解 `kb-update-rules.md` 中的掃描排除規則、知識庫架構規範與各章節更新策略，再繼續執行。
+1. **讀 [INDEX.md](knowledge/INDEX.md)**（< 80 行，30 秒掌握全貌）
+2. **讀涉及模組的 `modules/{m}/quickref.md`**（< 150 行，強制讀）
+3. **讀 [traps/topics/INDEX.md](knowledge/traps/topics/INDEX.md)**（主題目錄，掌握「這類問題以前發生過幾次、分布在哪」）
+4. **命中相關主題 → 讀 `traps/topics/{slug}.md`**（含相關 trap 表 + 防呆原則）
+5. **必要時讀 `traps/trap-NNN.md`**（細節：症狀/根因/修正/測試）
 
-## 步驟 2：掃描專案結構
+## 模糊查詢（替代上述 4 / 5）
 
-依照 `kb-update-rules.md` 第一章「專案掃描規則」收集以下資訊：
+無法確定主題時：
 
-1. **技術棧偵測**：依「1.3 技術棧偵測對應表」查找對應檔案
-2. **目錄結構**：列出深度最多 3 層的目錄樹，排除「1.1 必須排除的目錄」清單中的所有目錄
-3. **模組職責**：依目錄名稱與主要進入點檔案（`main.go`、`index.ts` 等）推斷各模組職責；無法判斷時稍後詢問使用者
-4. **Build / Test 指令**：查找 `Makefile`、`build.ps1`、`package.json` 的 `scripts` 段落
-5. **README 摘要**：若有 `README.md`，讀取前 20 行
+    node .vscode/knowledge/scripts/kb.mjs search "<關鍵字或檔名>"
 
-## 步驟 3：評估是否需要拆分額外 KB 檔案
+支援 FTS5 語法：`OR`、`"短語"`、`topics:"slug"`、`module:WorkPermit`。
 
-依照 `kb-update-rules.md` 第二章「2.2 何時應拆分額外 KB 檔案」判斷：
+## Facet 精準切片（程式碼任務常用）
 
-- 若**不需要**拆分，直接進入步驟 4
-- 若**需要**拆分，先向使用者說明原因與建議新增的檔案名稱，取得同意後再繼續
+依「我要修這個檔，以前在這檔踩過什麼坑？」查 [traps/by-file.json](knowledge/traps/by-file.json)；依「這個 tag 的歷史 bug」查 by-tag.json / by-topic.json / by-module.json / by-symptom.json。
 
-## 步驟 4：產生 `architecture.md` 更新草稿
+## 回報
 
-依照 `kb-update-rules.md` 第三章「各章節更新規則」整理更新後的完整內容：
+讀完上述後向用戶回報：涉及模組、命中主題（topic slug）、命中陷阱編號、待探索範圍。
 
-- 依各章節的「更新策略」決定覆蓋或合併
-- **絕對不可刪除**「已知雷區與決策紀錄」的任何既有列
-- **絕對不可刪除**「慣例與規範」的任何既有條目
+## 我的任務描述
 
-## 步驟 5：確認並寫入
-
-1. 以條列方式摘要「本次新增的項目」與「本次修改的項目」
-2. 詢問使用者：「是否將以上內容寫入 `.vscode/kb/architecture.md`？(y/n)」
-3. 使用者確認後，將完整內容寫入 `.vscode/kb/architecture.md`
-
-完成後說：「知識庫已更新完畢。建議下次任務開始前執行 /start-task 以載入最新知識庫。」
+（請在此描述你的任務內容）
 '@
 
-Write-Utf8File -Path (Join-Path $vscodeDir 'prompts\update-kb.prompt.md') -Content $updateKbContent -Overwrite:$Force
+Write-Utf8File -Path (Join-Path $vscodeDir 'start-task.prompt.md') -Content $startTaskPrompt -Overwrite:$Force
 
+# ─────────────────────────────────────────────────────────────
+# 4. .vscode/start-plan.prompt.md
+# ─────────────────────────────────────────────────────────────
+Write-Section "4. start-plan.prompt.md"
+
+$startPlanPrompt = @'
+---
+agent: Plan
+description: "規劃模式：讀取精簡知識庫 → 輸出執行計劃 → 等待確認後才執行"
+---
+
+# 規劃啟動：讀取知識庫 → 輸出計劃 → **等待確認**
+
+> **重要：本 prompt 僅進行知識庫讀取與規劃，嚴禁在取得使用者確認前執行任何寫入操作。**
+> 規範定義於 `copilot-instructions.md`（單一真實來源）。
+
+## 步驟一：讀取知識庫（4 層階梯）
+
+1. 讀 [INDEX.md](knowledge/INDEX.md)（< 80 行）
+2. 讀涉及模組的 `modules/{m}/quickref.md`（< 150 行）
+3. 讀 [traps/topics/INDEX.md](knowledge/traps/topics/INDEX.md)（主題目錄）
+4. 命中相關主題 → 讀 `traps/topics/{slug}.md`
+5. 必要時讀 `traps/trap-NNN.md`
+
+模糊查詢：
+
+    node .vscode/knowledge/scripts/kb.mjs search "<關鍵字>"
+
+Facet 精準切片：直接查 `traps/by-{file,topic,tag,module,symptom}.json`。
+
+## 步驟二：輸出執行計劃（只輸出文字，不執行）
+
+### 知識庫確認摘要
+
+| 項目 | 內容 |
+|------|------|
+| 涉及模組 | （列出） |
+| 命中主題 | （topic slug，附 `topics/{slug}.md` 路徑） |
+| 命中陷阱 | （Trap #N，附 fragment 路徑） |
+| 已有規則 | （從 quickref / topic 防呆原則摘錄） |
+| 需探索 | （不確定的部分） |
+
+### 風險評估
+
+列出潛在風險與須注意的已知陷阱。
+
+### 執行計劃
+
+以 `[探索]` / `[新增]` / `[修改]` / `[測試]` / `[知識庫]` 標籤列出步驟。
+
+### 預計異動檔案清單
+
+| 操作 | 檔案路徑 | 說明 |
+|------|---------|------|
+
+## ⏸ 等待確認
+
+- 「**確認**」→ 依計劃執行
+- 「**調整 N**」→ 修改第 N 步
+- 「**取消**」→ 中止
+
+## 我的任務描述
+
+（請在此描述你的任務內容）
+'@
+
+Write-Utf8File -Path (Join-Path $vscodeDir 'start-plan.prompt.md') -Content $startPlanPrompt -Overwrite:$Force
+
+# ─────────────────────────────────────────────────────────────
+# 5. .vscode/end-task.prompt.md
+# ─────────────────────────────────────────────────────────────
+Write-Section "5. end-task.prompt.md"
+
+$endTaskPrompt = @'
+---
+agent: agent
+description: "任務結束後，更新知識庫並輸出 Commit 訊息"
+---
+
+# 任務結束：更新知識庫與 Commit
+
+> 依 `copilot-instructions.md`「任務結束後」固定順序執行。
+
+## 執行步驟
+
+1. **輸出 Commit 訊息**（純文字段落，禁止 fenced code block；格式見 `copilot-instructions.md`「Commit 訊息格式」）
+
+2. **若有新陷阱** → 執行（`--topics --symptoms` 強烈建議帶上）：
+
+       node .vscode/knowledge/scripts/kb.mjs new-trap `
+         --module=SomeModule `
+         --title="..." `
+         --topics=slug1,slug2 `
+         --symptoms="症狀短語A;症狀短語B" `
+         --files=path/to/file.ext `
+         --tests=tests/path/test.ext
+
+   再編輯生成的 `traps/trap-NNN.md` 補完症狀/根因/修正/測試。
+   **若僅修訂既有陷阱** → 直接編輯對應 `traps/trap-NNN.md`，必要時更新 `topics:` / `symptoms:`。
+
+3. **若需新主題 slug** → 編輯 [traps/topics-taxonomy.yml](knowledge/traps/topics-taxonomy.yml) 新增條目（slug / name / desc / keywords）。
+
+4. **若主題防呆原則需更新** → 編輯 `traps/topics/{slug}.md` 的 `<!-- AUTO_END -->` **以下** 段落（AUTO 區會被 rebuild 覆寫，不要動）。
+
+5. **更新模組 quickref**（若有商務規則或設計變動）
+
+6. **在當月 `changelog/YYYY-MM.md` 最上方新增一行**（| 日期 | 模組 | 摘要 | 異動檔案 | 備註 |）
+
+7. **執行**：
+
+       node .vscode/knowledge/scripts/kb.mjs rebuild
+       node .vscode/knowledge/scripts/kb.mjs health
+
+   `health` 必須 0 errors 才算完成。`rebuild` 會自動：
+   - 重建 `traps/index.jsonl`
+   - 重建 `traps/by-{module,tag,topic,file,symptom}.json` facet 索引
+   - 重建 `traps/topics/{slug}.md` 與 `topics/INDEX.md`（AUTO 區）
+   - 重建 `traps/fts.db`（SQLite FTS5 全文檢索；需 Node 22.5+）
+
+## 本次任務摘要
+
+（可選填：若需補充背景，在此說明）
+'@
+
+Write-Utf8File -Path (Join-Path $vscodeDir 'end-task.prompt.md') -Content $endTaskPrompt -Overwrite:$Force
+
+# ─────────────────────────────────────────────────────────────
+# 6. knowledge/INDEX.md
+# ─────────────────────────────────────────────────────────────
+Write-Section "6. knowledge/INDEX.md（4 層導航）"
+
+$kbIndex = @'
+# 專案知識庫索引
+
+> AI 啟動任務時依「4 層階梯」讀取；詳細規範見 `.vscode/copilot-instructions.md`。
+
+## Quick Context（30 秒）
+
+**技術棧**：（請填入）
+**程式碼路徑**：（請填入）
+**測試**：（請填入）
+
+## 4 層階梯閱讀路徑
+
+    INDEX.md  →  modules/{m}/quickref.md  →  traps/topics/INDEX.md  →  traps/topics/{slug}.md  →  traps/trap-NNN.md
+
+## 模組導航（第 2 層）
+
+| 模組 | quickref | 一句話 |
+|------|----------|--------|
+| （請填入） | （路徑） | （說明） |
+
+## 已知陷阱（第 3 / 4 / 5 層）
+
+- **第 3 層**：[traps/topics/INDEX.md](traps/topics/INDEX.md)（主題目錄，看「這類問題以前發生過幾次」）
+- **第 4 層**：[traps/topics/{slug}.md](traps/topics/)（主題集群，含相關 trap 表 + 防呆原則）
+- **第 5 層**：[traps/trap-NNN.md](traps/)（細節：症狀/根因/修正/測試）
+
+主題分類學定義見 [traps/topics-taxonomy.yml](traps/topics-taxonomy.yml)（白名單，禁止繞過）。
+
+## 多種查詢方式
+
+| 場景 | 工具 |
+|------|------|
+| 模糊關鍵字 / 全文檢索 | `node .vscode/knowledge/scripts/kb.mjs search "<關鍵字>"`（SQLite FTS5） |
+| 我要修這個檔，以前踩過什麼坑？ | 查 [traps/by-file.json](traps/by-file.json) |
+| 某主題的所有 trap | 查 [traps/by-topic.json](traps/by-topic.json) 或讀 `topics/{slug}.md` |
+| 某模組的所有 trap | 查 [traps/by-module.json](traps/by-module.json) |
+| 某 tag 的所有 trap | 查 [traps/by-tag.json](traps/by-tag.json) |
+| 症狀關鍵字命中 | 查 [traps/by-symptom.json](traps/by-symptom.json) |
+| 機器可讀全表 | 讀 [traps/index.jsonl](traps/index.jsonl)（每行一個 JSON） |
+
+## 變更歷程
+
+按月封存於 [changelog/](changelog/)。任務結束時於當月檔案最上方加一行。
+
+## 工具（CLI）
+
+工具位於 [scripts/kb.mjs](scripts/kb.mjs)（Node 純 ESM）。
+
+| 命令 | 用途 |
+|------|------|
+| `kb.mjs new-trap --module=X --title="..." --topics=slug --symptoms="A;B"` | 建新 trap fragment |
+| `kb.mjs rebuild` | 重建 index.jsonl + facets + topics + fts.db |
+| `kb.mjs taxonomy lint` | 校驗所有 trap 的 topics 都在白名單內 |
+| `kb.mjs taxonomy stats` | 列出每個 topic 的 trap 覆蓋數 |
+| `kb.mjs search "<query>"` | FTS5 全文檢索（需 Node 22.5+） |
+| `kb.mjs facets` / `topics` | 只重建單項 |
+| `kb.mjs audit` | 找拆分候選（多議題混在一個 trap） |
+| `kb.mjs health` | 檢查 id / 編碼 / quickref 行數 / topics 對應 |
+
+## 任務結束 Checklist
+
+依序執行（缺一不可）：
+
+1. 輸出 commit 訊息（純文字，不放 fenced code block）
+2. 新增/編輯 trap fragment（必帶 `--topics --symptoms`），需要時補 taxonomy.yml
+3. 在當月 `changelog/YYYY-MM.md` 最上方新增一行
+4. `node .vscode/knowledge/scripts/kb.mjs rebuild`
+5. `node .vscode/knowledge/scripts/kb.mjs health`（必須 0 errors）
+'@
+
+Write-Utf8File -Path (Join-Path $kbDir 'INDEX.md') -Content $kbIndex -Overwrite:$Force
+
+# ─────────────────────────────────────────────────────────────
+# 7. changelog/{當月}.md
+# ─────────────────────────────────────────────────────────────
+Write-Section "7. changelog/$currentMonth.md"
+
+$changelogContent = @"
+# 變更歷程 — $currentMonth
+
+> 每次任務結束時，於本表**最上方**插入一行（最新者在上）。
+
+| 日期 | 模組 | 摘要 | 異動檔案 | 備註 |
+|------|------|------|---------|------|
+"@
+
+$changelogPath = Join-Path $kbDir "changelog\$currentMonth.md"
+Write-Utf8File -Path $changelogPath -Content $changelogContent -Overwrite:$Force
+
+# ─────────────────────────────────────────────────────────────
+# 8. modules/.gitkeep
+# ─────────────────────────────────────────────────────────────
+Write-Section "8. modules/（空目錄，使用者自填）"
+
+Write-Utf8File -Path (Join-Path $kbDir 'modules\.gitkeep') -Content "" -Overwrite:$Force
+
+# ─────────────────────────────────────────────────────────────
+# 9. traps/topics-taxonomy.yml（純骨架：只放 misc 一個 slug）
+# ─────────────────────────────────────────────────────────────
+Write-Section "9. traps/topics-taxonomy.yml（白名單）"
+
+$taxonomyContent = @'
+# 主題分類學（Topics Taxonomy）— 知識庫 v3 主題白名單
+#
+# 規則：
+#   1. 每個 trap 的 frontmatter `topics:` 欄位只能使用本檔登記的 slug
+#   2. 新增前先 grep 既有 slug 確認無重複；命名一律 kebab-case
+#   3. 變更後執行：node .vscode/knowledge/scripts/kb.mjs taxonomy lint
+#
+# 欄位說明：
+#   slug      唯一短代號（kebab-case），會出現在 trap.frontmatter.topics 與檔名 topics/{slug}.md
+#   name      顯示名稱（中英文皆可）
+#   desc      一句話定義
+#   keywords  協助 AI 自動命中本主題的關鍵字陣列
+
+topics:
+  - slug: misc
+    name: 雜項
+    desc: 尚未分類或一次性的陷阱
+    keywords: []
+'@
+
+Write-Utf8File -Path (Join-Path $kbDir 'traps\topics-taxonomy.yml') -Content $taxonomyContent -Overwrite:$Force
+
+# ─────────────────────────────────────────────────────────────
+# 10. traps/topics/.gitkeep
+# ─────────────────────────────────────────────────────────────
+Write-Section "10. traps/topics/（rebuild 後自動填充）"
+
+Write-Utf8File -Path (Join-Path $kbDir 'traps\topics\.gitkeep') -Content "" -Overwrite:$Force
+
+# ─────────────────────────────────────────────────────────────
+# 11. scripts/kb.mjs（v3 CLI；FTS 採 node:sqlite）
+# ─────────────────────────────────────────────────────────────
+Write-Section "11. scripts/kb.mjs（v3 CLI）"
+
+$kbScript = @'
+#!/usr/bin/env node
+// 知識庫 v3 CLI — 主題化 + facet + FTS 整合
+// 純 Node ESM、無外部相依（FTS 採 Node 22.5+ 內建 node:sqlite，不可用時優雅降級）。
+// Commands: rebuild | new-trap | new-decision | health | taxonomy | audit | facets | topics | search | bulk-tag
+
+import { readFile, writeFile, readdir, mkdir, unlink } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const KB_ROOT = path.resolve(__dirname, '..');
+const TRAPS_DIR = path.join(KB_ROOT, 'traps');
+const TOPICS_DIR = path.join(TRAPS_DIR, 'topics');
+const TRAPS_INDEX = path.join(TRAPS_DIR, 'index.jsonl');
+const TAXONOMY = path.join(TRAPS_DIR, 'topics-taxonomy.yml');
+const MODULES_DIR = path.join(KB_ROOT, 'modules');
+const FTS_DB = path.join(TRAPS_DIR, 'fts.db');
+
+// 嘗試載入 node:sqlite（Node 22.5+），不可用時優雅降級
+let DatabaseSync = null;
+let sqliteUnavailableReason = '';
+try {
+  ({ DatabaseSync } = await import('node:sqlite'));
+} catch (e) {
+  sqliteUnavailableReason = e.message;
+}
+// 抑制 SQLite ExperimentalWarning（Node 22.5–23.x）
+process.on('warning', (w) => {
+  if (w.name === 'ExperimentalWarning' && /SQLite/i.test(w.message)) return;
+  console.warn(w);
+});
+
+// =================================================================
+//  Frontmatter parser/serializer  — 支援 block 字串列表 + CJK
+// =================================================================
+const FM_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+
+function parseFrontmatter(text) {
+  const m = text.match(FM_RE);
+  if (!m) return { data: {}, body: text };
+  const data = {};
+  const lines = m[1].split(/\r?\n/);
+  let i = 0;
+  while (i < lines.length) {
+    const raw = lines[i];
+    if (!raw.trim() || raw.trim().startsWith('#')) { i++; continue; }
+    const km = raw.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
+    if (!km) { i++; continue; }
+    const key = km[1];
+    const inline = km[2];
+    if (inline === '' || inline === undefined) {
+      const items = [];
+      i++;
+      while (i < lines.length) {
+        const L = lines[i];
+        if (/^[A-Za-z_][\w-]*:/.test(L)) break;
+        const dm = L.match(/^\s+-\s+(.*)$/);
+        if (dm) { items.push(unquote(dm[1].trim())); i++; continue; }
+        if (!L.trim()) { i++; continue; }
+        break;
+      }
+      data[key] = items;
+    } else if (inline.startsWith('[') && inline.endsWith(']')) {
+      const inner = inline.slice(1, -1).trim();
+      data[key] = inner ? splitCsv(inner).map(unquote) : [];
+      i++;
+    } else if (/^-?\d+$/.test(inline)) {
+      data[key] = Number(inline);
+      i++;
+    } else {
+      data[key] = unquote(inline);
+      i++;
+    }
+  }
+  return { data, body: text.slice(m[0].length) };
+}
+
+function splitCsv(s) {
+  const out = []; let cur = ''; let q = null;
+  for (const ch of s) {
+    if (q) { if (ch === q) { q = null; } else { cur += ch; } continue; }
+    if (ch === '"' || ch === "'") { q = ch; continue; }
+    if (ch === ',') { out.push(cur.trim()); cur = ''; continue; }
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+function unquote(s) { return s.replace(/^["']|["']$/g, ''); }
+
+function stringifyFrontmatter(data) {
+  const lines = ['---'];
+  for (const [k, v] of Object.entries(data)) {
+    if (v === null || v === undefined) continue;
+    if (Array.isArray(v)) {
+      if (v.length === 0) { lines.push(`${k}: []`); continue; }
+      const allShortSafe = v.every(x => typeof x === 'string' && !x.includes('\n') && x.length < 80 && !/[:#\[\]&*!|>'"%@`,]/.test(x));
+      if (allShortSafe) {
+        lines.push(`${k}: [${v.map(s => /[\s]/.test(s) ? JSON.stringify(s) : s).join(', ')}]`);
+      } else {
+        lines.push(`${k}:`);
+        for (const item of v) lines.push(`  - ${needsQuote(item) ? JSON.stringify(String(item)) : String(item)}`);
+      }
+    } else if (typeof v === 'number') {
+      lines.push(`${k}: ${v}`);
+    } else {
+      const s = String(v);
+      lines.push(needsQuote(s) ? `${k}: ${JSON.stringify(s)}` : `${k}: ${s}`);
+    }
+  }
+  lines.push('---', '');
+  return lines.join('\n');
+}
+
+function needsQuote(s) {
+  return /^[\s>!|*&%@`]/.test(s) || /[:#\[\]"']/.test(s) || s === '' || /^(true|false|null|yes|no)$/i.test(s) || /^-?\d/.test(s);
+}
+
+// =================================================================
+//  File helpers
+// =================================================================
+async function ensureDir(d) { await mkdir(d, { recursive: true }); }
+async function readUtf8(p) {
+  const buf = await readFile(p);
+  if (buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) return buf.slice(3).toString('utf8');
+  return buf.toString('utf8');
+}
+async function writeUtf8(p, content) {
+  await ensureDir(path.dirname(p));
+  await writeFile(p, content, { encoding: 'utf8' });
+}
+async function listMd(dir) {
+  if (!existsSync(dir)) return [];
+  const e = await readdir(dir, { withFileTypes: true });
+  return e.filter(x => x.isFile() && x.name.endsWith('.md')).map(x => path.join(dir, x.name));
+}
+function pad(n, w = 3) { return String(n).padStart(w, '0'); }
+
+// =================================================================
+//  Taxonomy loader  — 簡單 YAML 解析
+// =================================================================
+function loadTaxonomy() {
+  if (!existsSync(TAXONOMY)) return { topics: [], slugs: new Set() };
+  const text = readFileSync(TAXONOMY, 'utf8');
+  const topics = [];
+  let cur = null;
+  for (const raw of text.split(/\r?\n/)) {
+    if (raw.startsWith('#') || !raw.trim()) continue;
+    const startM = raw.match(/^\s*-\s*slug:\s*(.+?)\s*$/);
+    if (startM) { if (cur) topics.push(cur); cur = { slug: startM[1].trim() }; continue; }
+    if (!cur) continue;
+    const kv = raw.match(/^\s+(\w+):\s*(.+?)\s*$/);
+    if (!kv) continue;
+    const [, k, v] = kv;
+    if (k === 'keywords') {
+      cur.keywords = v.startsWith('[') ? splitCsv(v.slice(1, -1)).map(unquote) : [];
+    } else {
+      cur[k] = unquote(v);
+    }
+  }
+  if (cur) topics.push(cur);
+  return { topics, slugs: new Set(topics.map(t => t.slug)) };
+}
+
+// =================================================================
+//  Trap loader
+// =================================================================
+async function loadAllTraps() {
+  const files = (await listMd(TRAPS_DIR)).filter(f => /trap-\d+\.md$/.test(path.basename(f)));
+  const traps = [];
+  for (const f of files) {
+    const text = await readUtf8(f);
+    const { data, body } = parseFrontmatter(text);
+    traps.push({ file: path.basename(f), body, ...data });
+  }
+  return traps.sort((a, b) => (a.id || 0) - (b.id || 0));
+}
+
+// =================================================================
+//  rebuild  — index.jsonl + facets + topics + (optional) FTS
+// =================================================================
+async function cmdRebuild(args) {
+  const opts = parseOpts(args);
+  const traps = await loadAllTraps();
+  const seen = new Set();
+  const errors = [];
+  const lines = [];
+  for (const t of traps) {
+    if (typeof t.id !== 'number') { errors.push(`${t.file}: missing numeric id`); continue; }
+    if (seen.has(t.id)) { errors.push(`duplicate id ${t.id} in ${t.file}`); continue; }
+    seen.add(t.id);
+    const expected = `trap-${pad(t.id)}.md`;
+    if (t.file !== expected) errors.push(`${t.file}: filename should be ${expected}`);
+    lines.push(JSON.stringify({
+      id: t.id,
+      title: t.title || '',
+      module: t.module || '',
+      topics: t.topics || [],
+      symptoms: t.symptoms || [],
+      related: t.related || [],
+      date: t.date || '',
+      status: t.status || 'fixed',
+      severity: t.severity || '',
+      tags: t.tags || [],
+      files: t.files || [],
+      file: t.file,
+    }));
+  }
+  await writeUtf8(TRAPS_INDEX, lines.join('\n') + (lines.length ? '\n' : ''));
+  console.log(`[rebuild] wrote ${lines.length} entries to traps/index.jsonl`);
+
+  await buildFacets(traps);
+  await buildTopicPages(traps);
+
+  if (opts.fts !== false) {
+    try { await buildFtsIndex(traps); }
+    catch (e) { errors.push('fts build failed: ' + e.message); }
+  }
+
+  if (errors.length) {
+    console.error('[rebuild] errors:'); for (const e of errors) console.error('  ' + e);
+    process.exitCode = 1;
+  }
+}
+
+// =================================================================
+//  facets  — by-module / by-tag / by-topic / by-file / by-symptom
+// =================================================================
+async function cmdFacets() { await buildFacets(await loadAllTraps()); }
+
+async function buildFacets(traps) {
+  const active = traps.filter(t => (t.status || 'fixed') !== 'archived');
+  const byModule = {}, byTag = {}, byTopic = {}, byFile = {}, bySymptom = {};
+  const push = (m, k, id) => { if (!k) return; (m[k] = m[k] || []).push(id); };
+  for (const t of active) {
+    push(byModule, t.module, t.id);
+    for (const x of t.tags || []) push(byTag, x, t.id);
+    for (const x of t.topics || []) push(byTopic, x, t.id);
+    for (const f of t.files || []) push(byFile, normalizeFile(f), t.id);
+    for (const s of t.symptoms || []) push(bySymptom, normalizeSymptom(s), t.id);
+  }
+  for (const m of [byModule, byTag, byTopic, byFile, bySymptom]) {
+    for (const k of Object.keys(m)) m[k] = [...new Set(m[k])].sort((a, b) => a - b);
+  }
+  await writeUtf8(path.join(TRAPS_DIR, 'by-module.json'), JSON.stringify(byModule, null, 2) + '\n');
+  await writeUtf8(path.join(TRAPS_DIR, 'by-tag.json'), JSON.stringify(byTag, null, 2) + '\n');
+  await writeUtf8(path.join(TRAPS_DIR, 'by-topic.json'), JSON.stringify(byTopic, null, 2) + '\n');
+  await writeUtf8(path.join(TRAPS_DIR, 'by-file.json'), JSON.stringify(byFile, null, 2) + '\n');
+  await writeUtf8(path.join(TRAPS_DIR, 'by-symptom.json'), JSON.stringify(bySymptom, null, 2) + '\n');
+  console.log(`[facets] modules=${Object.keys(byModule).length} tags=${Object.keys(byTag).length} topics=${Object.keys(byTopic).length} files=${Object.keys(byFile).length} symptoms=${Object.keys(bySymptom).length}`);
+}
+
+function normalizeFile(f) {
+  return String(f).trim().replace(/[\\/]+/g, '/').replace(/^\.\//, '');
+}
+function normalizeSymptom(s) {
+  return String(s).trim().replace(/\s+/g, ' ').slice(0, 60);
+}
+
+// =================================================================
+//  topics  — 自動產生 topics/{slug}.md + topics/INDEX.md
+//  AUTO 區由 <!-- AUTO_BEGIN --> ... <!-- AUTO_END --> 包覆，僅覆寫此區
+// =================================================================
+async function cmdTopics() { await buildTopicPages(await loadAllTraps()); }
+
+const AUTO_BEGIN = '<!-- AUTO_BEGIN -->';
+const AUTO_END = '<!-- AUTO_END -->';
+
+async function buildTopicPages(traps) {
+  const { topics } = loadTaxonomy();
+  const active = traps.filter(t => (t.status || 'fixed') !== 'archived');
+  const byTopic = new Map();
+  for (const t of active) for (const slug of t.topics || []) {
+    if (!byTopic.has(slug)) byTopic.set(slug, []);
+    byTopic.get(slug).push(t);
+  }
+  await ensureDir(TOPICS_DIR);
+  for (const topic of topics) {
+    const list = (byTopic.get(topic.slug) || []).sort((a, b) => a.id - b.id);
+    const tableRows = list.length
+      ? list.map(t => `| ${t.id} | ${t.title || ''} | ${(t.files || []).slice(0, 2).join(', ')} | [→](../trap-${pad(t.id)}.md) |`).join('\n')
+      : '| - | _尚無相關 trap_ | - | - |';
+    const auto = [
+      AUTO_BEGIN,
+      `**定義**：${topic.desc || ''}`,
+      `**關鍵字**：${(topic.keywords || []).join(', ')}`,
+      `**相關 trap 數**：${list.length}`,
+      '',
+      '## 相關 Trap',
+      '',
+      '| id | 一句話 | 主要檔案 | 連結 |',
+      '|----|--------|---------|------|',
+      tableRows,
+      AUTO_END,
+    ].join('\n');
+    const file = path.join(TOPICS_DIR, `${topic.slug}.md`);
+    let manualTail = '';
+    if (existsSync(file)) {
+      const old = await readUtf8(file);
+      const m = old.match(/<!-- AUTO_END -->([\s\S]*)$/);
+      if (m) manualTail = m[1].replace(/^\s*\n/, '\n');
+    } else {
+      manualTail = '\n\n## 防呆原則\n\n（手動編輯，CLI 不會覆寫此區）\n';
+    }
+    const content = `# Topic: ${topic.name || topic.slug}\n\n> 自動產生 — \`AUTO_BEGIN/AUTO_END\` 之間請勿手動編輯（會被 \`kb.mjs rebuild\` 覆寫）。\n\n${auto}\n${manualTail}`;
+    await writeUtf8(file, content);
+  }
+  const idxRows = topics.map(t => {
+    const n = (byTopic.get(t.slug) || []).length;
+    return `| ${t.slug} | ${t.name || ''} | ${n} | [→](${t.slug}.md) |`;
+  }).join('\n');
+  const orphan = [];
+  for (const t of active) for (const s of t.topics || []) {
+    if (!topics.find(x => x.slug === s)) orphan.push(`#${t.id} → ${s}`);
+  }
+  const orphanSec = orphan.length
+    ? `\n\n## 未登記的 topic slug（請補入 topics-taxonomy.yml）\n\n${[...new Set(orphan)].sort().map(x => '- ' + x).join('\n')}\n`
+    : '';
+  const idx = `# 主題目錄（Topics Index）\n\n> 由 \`kb.mjs rebuild\` 自動產生。AI 啟動任務時讀本檔即可掌握所有主題分布。\n\n| slug | 名稱 | 相關 trap 數 | 連結 |\n|------|------|-------------|------|\n${idxRows}\n\n## 用法\n\n- 想知道某類問題以前發生過幾次 → 看上表的「相關 trap 數」\n- 命中主題 → 讀對應 \`topics/{slug}.md\`（含相關 trap 表 + 防呆原則）\n- 模糊查詢 → \`node .vscode/knowledge/scripts/kb.mjs search "<關鍵字>"\`${orphanSec}\n`;
+  await writeUtf8(path.join(TOPICS_DIR, 'INDEX.md'), idx);
+  console.log(`[topics] wrote ${topics.length} topic page(s) + INDEX${orphan.length ? ` (${orphan.length} orphan slugs)` : ''}`);
+}
+
+// =================================================================
+//  taxonomy lint  — frontmatter topics 必須在 taxonomy 內
+// =================================================================
+async function cmdTaxonomy(args) {
+  const sub = args[0];
+  if (sub === 'lint') {
+    const { slugs, topics } = loadTaxonomy();
+    const traps = await loadAllTraps();
+    const errors = [];
+    const unmapped = [];
+    for (const t of traps) {
+      const list = t.topics || [];
+      if (list.length === 0 && (t.status || 'fixed') !== 'archived') unmapped.push(t.id);
+      for (const s of list) if (!slugs.has(s)) errors.push(`#${t.id}: unknown topic slug "${s}"`);
+    }
+    console.log(`[taxonomy lint] topics=${topics.length} traps=${traps.length} unmapped=${unmapped.length} errors=${errors.length}`);
+    if (unmapped.length) console.log('  unmapped trap ids: ' + unmapped.join(','));
+    for (const e of errors) console.error('  ERROR ' + e);
+    if (errors.length) process.exitCode = 1;
+  } else if (sub === 'stats') {
+    const { topics } = loadTaxonomy();
+    const traps = await loadAllTraps();
+    const counts = new Map();
+    for (const t of traps) for (const s of t.topics || []) counts.set(s, (counts.get(s) || 0) + 1);
+    console.log('slug\tcount\tname');
+    for (const t of topics) console.log(`${t.slug}\t${counts.get(t.slug) || 0}\t${t.name || ''}`);
+  } else {
+    console.log('Usage: kb.mjs taxonomy <lint|stats>');
+  }
+}
+
+// =================================================================
+//  audit  — 找候選拆分
+// =================================================================
+async function cmdAudit() {
+  const traps = await loadAllTraps();
+  const splitCandidates = [];
+  for (const t of traps) {
+    const lines = (t.body || '').split(/\r?\n/);
+    const headings = lines.filter(L => /^##?\s+(症狀|根因|修正|測試|問題)/.test(L));
+    if (lines.length > 60 && headings.length >= 3) splitCandidates.push({ id: t.id, lines: lines.length, heads: headings.length });
+  }
+  console.log(`[audit] split candidates (lines>60 & 多段 症狀/根因): ${splitCandidates.length}`);
+  for (const s of splitCandidates) console.log(`  #${s.id}  lines=${s.lines}  headings=${s.heads}`);
+}
+
+// =================================================================
+//  bulk-tag  — 一次性套用 trap → topics 對照表
+// =================================================================
+async function cmdBulkTag(args) {
+  const opts = parseOpts(args);
+  let mapJson;
+  if (opts.file) mapJson = await readUtf8(opts.file);
+  else mapJson = await new Promise((res, rej) => {
+    let s = ''; process.stdin.setEncoding('utf8');
+    process.stdin.on('data', c => s += c); process.stdin.on('end', () => res(s)); process.stdin.on('error', rej);
+  });
+  const map = JSON.parse(mapJson);
+  const { slugs } = loadTaxonomy();
+  const traps = await loadAllTraps();
+  let updated = 0;
+  const unknown = new Set();
+  for (const t of traps) {
+    const key = String(t.id);
+    if (!map[key]) continue;
+    const newTopics = map[key];
+    for (const s of newTopics) if (!slugs.has(s)) unknown.add(s);
+    const file = path.join(TRAPS_DIR, t.file);
+    const text = await readUtf8(file);
+    const { data, body } = parseFrontmatter(text);
+    data.topics = newTopics;
+    if (!data.symptoms) data.symptoms = [];
+    await writeUtf8(file, stringifyFrontmatter(data) + body);
+    updated++;
+  }
+  console.log(`[bulk-tag] updated ${updated} trap(s)`);
+  if (unknown.size) {
+    console.error('  unknown slugs (not in taxonomy):');
+    for (const s of unknown) console.error('    ' + s);
+    process.exitCode = 1;
+  }
+}
+
+// =================================================================
+//  FTS5  — 採 Node 22.5+ 內建 node:sqlite，不可用時降級
+// =================================================================
+function stripMd(s) {
+  s = s.replace(/```[\s\S]*?```/g, ' ');
+  s = s.replace(/`[^`]+`/g, ' $& ');
+  s = s.replace(/^#{1,6}\s+/gm, '');
+  s = s.replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, '$1');
+  return s;
+}
+
+async function buildFtsIndex(traps) {
+  if (!DatabaseSync) {
+    console.log(`[fts] skipped — node:sqlite unavailable (need Node 22.5+; ${sqliteUnavailableReason})`);
+    return;
+  }
+  if (existsSync(FTS_DB)) await unlink(FTS_DB);
+  const db = new DatabaseSync(FTS_DB);
+  db.exec("PRAGMA journal_mode=MEMORY");
+  db.exec(`CREATE VIRTUAL TABLE traps_fts USING fts5(
+    id UNINDEXED,
+    title,
+    module UNINDEXED,
+    topics,
+    symptoms,
+    body,
+    files UNINDEXED,
+    tokenize='unicode61 remove_diacritics 2'
+  )`);
+  const ins = db.prepare("INSERT INTO traps_fts(id,title,module,topics,symptoms,body,files) VALUES (?,?,?,?,?,?,?)");
+  let n = 0;
+  for (const t of traps) {
+    if ((t.status || 'fixed') === 'archived') continue;
+    ins.run(
+      Number(t.id) || 0,
+      String(t.title || ''),
+      String(t.module || ''),
+      (t.topics || []).join(' '),
+      (t.symptoms || []).join(' '),
+      stripMd(String(t.body || '')),
+      (t.files || []).join(' ')
+    );
+    n++;
+  }
+  db.exec("INSERT INTO traps_fts(traps_fts) VALUES('optimize')");
+  db.close();
+  console.log(`[fts] indexed ${n} trap(s) → traps/fts.db`);
+}
+
+async function cmdSearch(args) {
+  const opts = parseOpts(args);
+  const q = args.filter(a => !a.startsWith('--')).join(' ');
+  if (!q) { console.error('Usage: kb.mjs search "<query>" [--limit=20] [--json]'); process.exit(2); }
+  if (!DatabaseSync) {
+    console.error(`[fts] node:sqlite unavailable — need Node 22.5+ (got ${process.version}). Reason: ${sqliteUnavailableReason}`);
+    process.exit(1);
+  }
+  if (!existsSync(FTS_DB)) { console.error('fts.db not found — run `kb.mjs rebuild` first'); process.exit(1); }
+  const limit = Math.max(1, Math.min(200, Number(opts.limit) || 20));
+  const db = new DatabaseSync(FTS_DB, { readOnly: true });
+  let rows;
+  try {
+    const stmt = db.prepare(`SELECT id, title, module, topics,
+      snippet(traps_fts, 5, '«', '»', '…', 12) AS hit,
+      bm25(traps_fts) AS rank
+      FROM traps_fts WHERE traps_fts MATCH ? ORDER BY rank LIMIT ?`);
+    rows = stmt.all(q, limit);
+  } catch (e) {
+    console.error('[fts] error: ' + e.message);
+    process.exit(1);
+  }
+  db.close();
+  if (opts.json) { console.log(JSON.stringify(rows, null, 2)); return; }
+  if (!rows.length) { console.log('no match for: ' + q); return; }
+  console.log(`[fts] query="${q}"  hits=${rows.length}`);
+  for (const r of rows) {
+    const id = String(r.id).padStart(3, '0');
+    const rank = Number(r.rank).toFixed(3);
+    console.log(`  #${id}  rank=${rank}  [${r.module}]  ${r.title}`);
+    if (r.hit) console.log(`        ↳ ${String(r.hit).replace(/\s+/g, ' ')}`);
+  }
+}
+
+// =================================================================
+//  new-trap / new-decision
+// =================================================================
+async function cmdNewTrap(args) {
+  const opts = parseOpts(args);
+  if (!opts.title) { console.error('Usage: kb.mjs new-trap --module=X --title="..." [--topics=slug1,slug2] [--symptoms="A;B"] [--tags=a,b] [--files=...] [--tests=...] [--related=12,34]'); process.exit(2); }
+  const { slugs } = loadTaxonomy();
+  const topics = opts.topics ? opts.topics.split(',').map(s => s.trim()).filter(Boolean) : [];
+  for (const s of topics) if (!slugs.has(s)) { console.error(`unknown topic slug: ${s}`); process.exit(2); }
+  const traps = await loadAllTraps();
+  const nextId = traps.reduce((m, t) => Math.max(m, t.id || 0), 0) + 1;
+  const today = new Date().toISOString().slice(0, 10);
+  const fm = {
+    id: nextId,
+    title: opts.title,
+    module: opts.module || '',
+    topics,
+    symptoms: opts.symptoms ? opts.symptoms.split(/[;；]/).map(s => s.trim()).filter(Boolean) : [],
+    related: opts.related ? opts.related.split(',').map(s => Number(s.trim())).filter(Boolean) : [],
+    date: today,
+    status: 'fixed',
+    severity: opts.severity || 'bug',
+    tags: opts.tags ? opts.tags.split(',').map(s => s.trim()).filter(Boolean) : [],
+    files: opts.files ? opts.files.split(',').map(s => s.trim()).filter(Boolean) : [],
+    tests: opts.tests ? opts.tests.split(',').map(s => s.trim()).filter(Boolean) : [],
+  };
+  const body = `## 症狀\n\n（待補）\n\n## 根因\n\n（待補）\n\n## 修正\n\n（待補）\n\n## 測試\n\n（待補）\n`;
+  const out = path.join(TRAPS_DIR, `trap-${pad(nextId)}.md`);
+  await writeUtf8(out, stringifyFrontmatter(fm) + body);
+  console.log(`[new-trap] created trap #${nextId} at traps/${path.basename(out)}`);
+  await cmdRebuild(['--no-fts']);
+}
+
+async function cmdNewDecision(args) {
+  const opts = parseOpts(args);
+  if (!opts.module || !opts.title) { console.error('Usage: kb.mjs new-decision --module=X --title="..."'); process.exit(2); }
+  const dir = path.join(MODULES_DIR, opts.module.toLowerCase(), 'decisions');
+  await ensureDir(dir);
+  const existing = (await listMd(dir)).map(f => parseInt(path.basename(f).match(/decision-(\d+)/)?.[1] || '0', 10));
+  const nextId = (existing.length ? Math.max(...existing) : 0) + 1;
+  const today = new Date().toISOString().slice(0, 10);
+  const fm = { id: nextId, title: opts.title, module: opts.module, date: today, related_traps: [] };
+  const body = `## 決策\n\n（待補）\n\n## 原因\n\n（待補）\n`;
+  const out = path.join(dir, `decision-${pad(nextId)}.md`);
+  await writeUtf8(out, stringifyFrontmatter(fm) + body);
+  console.log(`[new-decision] created at ${path.relative(KB_ROOT, out)}`);
+}
+
+// =================================================================
+//  health
+// =================================================================
+async function cmdHealth() {
+  const errors = [];
+  const warnings = [];
+  const traps = await loadAllTraps();
+  const seen = new Set();
+  const { slugs } = loadTaxonomy();
+  for (const t of traps) {
+    if (typeof t.id !== 'number') errors.push(`${t.file}: missing numeric id`);
+    if (seen.has(t.id)) errors.push(`duplicate id ${t.id} in ${t.file}`);
+    seen.add(t.id);
+    if (`trap-${pad(t.id)}.md` !== t.file) errors.push(`${t.file}: filename != id`);
+    if (!t.title) warnings.push(`${t.file}: empty title`);
+    if (!t.module) warnings.push(`${t.file}: empty module`);
+    for (const s of t.topics || []) if (!slugs.has(s)) errors.push(`${t.file}: unknown topic "${s}"`);
+    if (!(t.topics || []).length && (t.status || 'fixed') !== 'archived') warnings.push(`${t.file}: empty topics (run kb.mjs taxonomy lint)`);
+  }
+  if (existsSync(TRAPS_INDEX)) {
+    const idxLines = (await readUtf8(TRAPS_INDEX)).split(/\r?\n/).filter(Boolean);
+    if (idxLines.length !== traps.length) errors.push(`traps/index.jsonl out of date: ${idxLines.length} vs ${traps.length} fragments — run rebuild`);
+  } else if (traps.length) errors.push('traps/index.jsonl missing — run rebuild');
+  for await (const p of walk(KB_ROOT)) {
+    if (!p.endsWith('.md')) continue;
+    const buf = await readFile(p);
+    if (buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) errors.push(`${path.relative(KB_ROOT, p)}: UTF-8 BOM detected`);
+    if (buf.includes(0xFFFD)) errors.push(`${path.relative(KB_ROOT, p)}: contains U+FFFD (encoding corruption)`);
+  }
+  if (existsSync(MODULES_DIR)) {
+    for await (const p of walk(MODULES_DIR)) {
+      if (path.basename(p) === 'quickref.md') {
+        const lines = (await readUtf8(p)).split(/\r?\n/).length;
+        if (lines > 150) warnings.push(`${path.relative(KB_ROOT, p)}: ${lines} lines > 150 (quickref should be terse)`);
+      }
+    }
+  }
+  console.log(`[health] traps=${traps.length}, errors=${errors.length}, warnings=${warnings.length}`);
+  for (const e of errors) console.error('  ERROR ' + e);
+  for (const w of warnings) console.warn('  WARN  ' + w);
+  if (errors.length) process.exitCode = 1;
+}
+
+async function* walk(d) {
+  if (!existsSync(d)) return;
+  for (const e of await readdir(d, { withFileTypes: true })) {
+    const p = path.join(d, e.name);
+    if (e.isDirectory()) yield* walk(p);
+    else yield p;
+  }
+}
+
+// =================================================================
+//  arg parser
+// =================================================================
+function parseOpts(argv) {
+  const out = {};
+  for (const a of argv) {
+    if (a === '--no-fts') { out.fts = false; continue; }
+    const m = a.match(/^--([\w-]+)(?:=(.*))?$/);
+    if (m) out[m[1]] = m[2] ?? true;
+  }
+  return out;
+}
+
+// =================================================================
+//  main
+// =================================================================
+const HELP = `kb.mjs — knowledge base v3 CLI
+
+Commands:
+  rebuild [--no-fts]     重建 index.jsonl + facets + topics + (FTS db)
+  new-trap               --module=X --title="..." [--topics=slug1,slug2] [--symptoms="A;B"]
+                         [--tags=a,b] [--files=...] [--tests=...] [--related=12,34]
+  new-decision           --module=X --title="..."
+  taxonomy lint|stats    校驗 / 統計 topic 覆蓋率
+  facets                 只重建 facet JSON
+  topics                 只重建 topics/*.md（保留手動防呆原則段落）
+  audit                  找拆分候選（行數 > 60 且多段症狀/根因）
+  bulk-tag --file=X.json 一次性套用 trap → topics 對照
+  search "<query>"       SQLite FTS5 全文檢索（需 Node 22.5+）
+  health                 健康檢查
+`;
+
+const [, , cmd, ...rest] = process.argv;
+try {
+  switch (cmd) {
+    case 'rebuild': await cmdRebuild(rest); break;
+    case 'new-trap': await cmdNewTrap(rest); break;
+    case 'new-decision': await cmdNewDecision(rest); break;
+    case 'taxonomy': await cmdTaxonomy(rest); break;
+    case 'facets': await cmdFacets(); break;
+    case 'topics': await cmdTopics(); break;
+    case 'audit': await cmdAudit(); break;
+    case 'bulk-tag': await cmdBulkTag(rest); break;
+    case 'search': await cmdSearch(rest); break;
+    case 'health': await cmdHealth(); break;
+    default: console.log(HELP); break;
+  }
+} catch (e) {
+  console.error(e.stack || e.message);
+  process.exit(1);
+}
+'@
+
+Write-Utf8File -Path (Join-Path $kbDir 'scripts\kb.mjs') -Content $kbScript -Overwrite:$Force
+
+# ─────────────────────────────────────────────────────────────
+# 12. 自動執行 rebuild + health（若 Node 可用）
+# ─────────────────────────────────────────────────────────────
+Write-Section "12. 自動初始化索引（rebuild + health）"
+
+$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+if ($nodeCmd) {
+    $kbMjs = Join-Path $kbDir 'scripts\kb.mjs'
+    Push-Location $projectRoot
+    # node 可能輸出 ExperimentalWarning 到 stderr；暫時放寬 ErrorActionPreference 避免被當成終止錯誤
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & node --no-warnings $kbMjs rebuild
+        if ($LASTEXITCODE -ne 0) { Write-Host "  [警告] rebuild 結束代碼 $LASTEXITCODE" -ForegroundColor Yellow }
+        & node --no-warnings $kbMjs health
+        if ($LASTEXITCODE -ne 0) { Write-Host "  [警告] health 結束代碼 $LASTEXITCODE" -ForegroundColor Yellow }
+    } catch {
+        Write-Host "  [警告] kb.mjs 執行失敗：$($_.Exception.Message)" -ForegroundColor Yellow
+    } finally {
+        $ErrorActionPreference = $prevEAP
+        Pop-Location
+    }
+} else {
+    Write-Host "  [略過] 找不到 node 執行檔；請手動執行：" -ForegroundColor Yellow
+    Write-Host "         node .vscode\knowledge\scripts\kb.mjs rebuild" -ForegroundColor Gray
+    Write-Host "         node .vscode\knowledge\scripts\kb.mjs health" -ForegroundColor Gray
+}
 
 # ─────────────────────────────────────────────────────────────
 # 完成提示
 # ─────────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "══════════════════════════════════" -ForegroundColor Green
-Write-Host "           初始化完成！            " -ForegroundColor Green
-Write-Host "══════════════════════════════════" -ForegroundColor Green
+Write-Host "════════════════════════════════════════════════" -ForegroundColor Green
+Write-Host "             初始化完成！                       " -ForegroundColor Green
+Write-Host "════════════════════════════════════════════════" -ForegroundColor Green
 Write-Host ""
 Write-Host "後續步驟：" -ForegroundColor White
-Write-Host "  1. 在 VSCode Copilot Chat 輸入 '/' 並選擇 'start-task'" -ForegroundColor Gray
-Write-Host "     → AI 將讀取知識庫、詢問任務需求，並在每次完成修改後自動執行收尾流程" -ForegroundColor DarkGray
+Write-Host "  1. 填入 .vscode/copilot-instructions.md 的「技術棧」「專案架構」「測試規範」三節" -ForegroundColor Gray
+Write-Host "  2. 填入 .vscode/knowledge/INDEX.md 的「Quick Context」與「模組導航」" -ForegroundColor Gray
+Write-Host "  3. 在 Copilot Chat 輸入 '/' 並選擇 'start-task' / 'start-plan' / 'end-task'" -ForegroundColor Gray
+Write-Host "  4. 累積 1–2 個 trap 後，把常見主題加入 .vscode/knowledge/traps/topics-taxonomy.yml" -ForegroundColor Gray
 Write-Host ""
-Write-Host "  2. 輸入 '/update-kb' 讓 AI 掃描專案並互動式更新知識庫" -ForegroundColor Gray
-Write-Host "     → AI 將偵測技術棧、目錄結構、Build 指令，確認後寫入 architecture.md" -ForegroundColor DarkGray
+Write-Host "建議在 .gitignore 加入：" -ForegroundColor White
+Write-Host "    .vscode/" -ForegroundColor Gray
+Write-Host "（每位協作者各自維護自己的本機 AI 知識庫，不必強制共用）" -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "  3. 若有獨立的收尾需求，可輸入 '/end-task'" -ForegroundColor Gray
-Write-Host "     → AI 將摘要任務、更新知識庫、產生 Commit 訊息" -ForegroundColor DarkGray
-Write-Host ""
-Write-Host "  4. 若需手動編輯知識庫，請直接修改：" -ForegroundColor Gray
-Write-Host "     .vscode\kb\architecture.md" -ForegroundColor DarkGray
-Write-Host "     .vscode\kb\coding-rules.md" -ForegroundColor DarkGray
-Write-Host ""
-Write-Host "  注意：建議把 .vscode 目錄加入 .gitignore 中，因為不是所有人都會使用 AI agent，且專案類型不同不適合把自己的知識庫共用給其他協作者。" -ForegroundColor DarkGray
-Write-Host ""
-
 
 # ─────────────────────────────────────────────────────────────
-# 重新啟動 VSCode（讓 /start-task 指令生效）
+# 重新啟動 VSCode
 # ─────────────────────────────────────────────────────────────
 Write-Host "────────────────────────────────────────────────" -ForegroundColor DarkGray
-Write-Host ""
-Write-Host "  [重要] VSCode 必須重新載入視窗，指令 /start-task 才會出現在 VSCode IDE Copilot Chat 視窗中" -ForegroundColor Yellow
+Write-Host "  [重要] VSCode 必須重新載入視窗，prompt 指令才會出現在 Copilot Chat 視窗中" -ForegroundColor Yellow
 Write-Host ""
 
 $codeCmd = Get-Command 'code' -ErrorAction SilentlyContinue
 if ($codeCmd) {
-    $reloadPrompt = Read-Host "  是否要現在重新啟動 VSCode？(Y/n)"
+    $reloadPrompt = Read-Host "  是否要現在重新載入 VSCode 視窗？(Y/n)"
     if ($reloadPrompt -eq '' -or $reloadPrompt -match '^[Yy]') {
-        Write-Host ""
-        Write-Host "  [重啟] 正在重新啟動 VSCode..." -ForegroundColor Cyan
-        # 先用 code CLI 重開資料夾（新視窗），再關閉舊視窗
         Start-Process -FilePath "code" -ArgumentList "--reuse-window `"$projectRoot`""
-        Start-Sleep -Seconds 2
-        Write-Host "  [完成] VSCode 已重新載入必要項目，請在對話視窗中試著輸入 /start-task 並開始使用，祝您使用愉快" -ForegroundColor Green
+        Write-Host "  [完成] VSCode 已重新載入，請在 Copilot Chat 試著輸入 /start-task" -ForegroundColor Green
     } else {
-        Write-Host ""
-        Write-Host "  請手動重新載入 VSCode：" -ForegroundColor Yellow
-        Write-Host "    方法 1（推薦）: 按 Ctrl+Shift+P，輸入 'Reload Window' 並按 Enter" -ForegroundColor Gray
-        Write-Host "    方法 2: 關閉 VSCode 後重新開啟此專案資料夾" -ForegroundColor Gray
+        Write-Host "  請手動：Ctrl+Shift+P → 'Reload Window'" -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  請手動重新載入 VSCode：" -ForegroundColor Yellow
-    Write-Host "    方法 1（推薦）: 按 Ctrl+Shift+P，輸入 'Reload Window' 並按 Enter" -ForegroundColor Gray
-    Write-Host "    方法 2: 關閉 VSCode 後重新開啟此專案資料夾" -ForegroundColor Gray
+    Write-Host "  請手動：Ctrl+Shift+P → 'Reload Window'" -ForegroundColor Yellow
 }
 Write-Host ""
-Write-Host "  提示：如果有需要，你可以馬上在 Copilot Chat 輸入 /update-kb 主動掃描、更新專案的知識庫" -ForegroundColor Cyan
-Write-Host ""
-
