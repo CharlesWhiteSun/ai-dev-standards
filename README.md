@@ -15,6 +15,7 @@
 - [4 層階梯閱讀路徑](#4-層階梯閱讀路徑)
 - [快速開始](#快速開始)
 - [既有知識庫升級](#既有知識庫升級)
+- [opsx.bat / opsx.ps1](#opsxbat--opsxps1)
 - [Copilot Chat 指令](#copilot-chat-指令)
 - [kb.mjs CLI 指令](#kbmjs-cli-指令)
 - [腳本參數](#腳本參數)
@@ -40,6 +41,27 @@
 | **結束動作** | `/opsx:archive` → `kb.mjs rebuild` | `kb.mjs rebuild` |
 | **產出位置** | `.vscode/openspec/changes/{name}/`（change artifacts）`.vscode/openspec/specs/{module}/`（行為契約）| `traps/trap-NNN.md`（陷阱）`traps/topics/{slug}.md`（主題集群）|
 
+### v3.2 架構概觀
+
+    ┌──────────────────────────────────────────────────────────────┐
+    │                      雙軌儲存系統                            │
+    │  ┌──────────────────────┐      ┌────────────────────────┐  │
+    │  │      OpenSpec        │      │    Knowledge Base      │  │
+    │  │  .vscode/openspec/   │      │  .vscode/knowledge/    │  │
+    │  │  WHAT：行為規格      │      │  WHY / HOW-NOT-TO      │  │
+    │  │  changes/{name}/     │      │  traps/trap-NNN.md     │  │
+    │  │  specs/{module}/     │      │  traps/topics/         │  │
+    │  └──────────────────────┘      └────────────────────────┘  │
+    └──────────────────────────────────────────────────────────────┘
+
+    ┌──────────────┬─────────────────┬──────────────┬────────────────┐
+    │ #start-plan  │  /opsx:propose  │ #start-task  │   #end-task    │
+    │  預讀+計劃   │   建立 change   │ KB讀取+實作  │  KB更新+歸檔   │
+    │ （等待確認） │    artifacts    │ /opsx:apply  │ /opsx:archive  │
+    │              │  確認計劃後觸發 │   執行測試   │   rebuild      │
+    │              │                 │              │   finish-check │
+    └──────────────┴─────────────────┴──────────────┴────────────────┘
+
 ### v3.2 完整開發流程
 
 初始化或升級後，可在 Copilot Chat 以以下流程作業：
@@ -56,26 +78,56 @@
 
 ### Prompt 入口對照（v3.2）
 
-| Prompt | 涵蓋步驟 | 用途 | 注意 |
-|--------|---------|------|------|
-| `#start-plan` | Step 0, Step 2 | 分析需求、讀 KB、輸出計劃表，**等待確認才繼續** | Read-only；Step 1 須確認後手動觸發 |
-| `#start-task` | Step 0~4 | KB 讀取 + 實作 + 測試 | Bug 修復跳過 Step 0~1 |
+| Prompt / 指令 | 涵蓋步驟 | 用途 | 注意 |
+|--------------|---------|------|------|
+| `#start-plan` | Step 0, Step 2 | 分析需求、讀 KB、輸出計劃表，**等待確認才繼續** | Read-only；不寫入任何檔案 |
+| `/opsx:propose` | Step 1 | 確認計劃後，建立 change artifacts（tasks.md、design.md、spec.md） | 確認計劃後**手動觸發**；bug 修復通常跳過 |
+| `#start-task` | Step 2~4 | KB 讀取 + 實作 + 測試 | 新功能含 `/opsx:apply`；bug 修復跳過 Step 0~1 |
 | `#end-task` | Step 5~8 | KB 更新 + archive + rebuild + finish-check | archive（Step 6）在 rebuild（Step 7）之前 |
+
+### 何時觸發 `/opsx:propose`
+
+`/opsx:propose` 負責把「確認的計劃」轉為具體 change artifacts，供後續 `/opsx:apply` 追蹤實作進度：
+
+**應該觸發：**
+
+- 新功能、新頁面、新 API 端點
+- 規格變更（改變已定義的行為契約）
+- 跨模組設計決策（影響兩個以上的 Controller / Service / 資料流）
+
+**可以跳過：**
+
+- 純 bug 修復（已知問題，不改行為契約）
+- 陷阱修補（只補 KB，不涉及新規格）
+- 技術債清理（對外行為不變）
+- 一次性 migration / seed / 資料修補腳本
+
+> 若不確定，先用 `#start-plan` 搭配 `/opsx:explore` 釐清邊界，確認後再決定是否執行 `/opsx:propose`。
 
 ### 依任務類型選擇流程
 
-**新功能 / 規格變更**：
-
-    #start-plan   → 探索需求 + KB 讀取 + 輸出計劃
-    確認計劃
-    /opsx:propose → 建立 change artifacts（Step 1）
-    #start-task   → KB 重讀 + /opsx:apply 實作 + 測試（Step 2~4）
-    #end-task     → KB 更新 + archive + rebuild + finish-check（Step 5~8）
-
-**Bug 修復 / 陷阱修補**：
-
-    #start-task   → KB 讀取 + 直接實作 + 測試（Step 2~4，跳過 Step 0~1）
-    #end-task     → KB 更新 + rebuild + finish-check（Step 5~8，跳過 Step 6）
+    新功能 / 規格變更                            Bug 修復 / 陷阱修補
+    ──────────────────────────────               ─────────────────────
+    #start-plan                                  │
+      ↓ OpenSpec 預讀 + KB 讀取                  │
+      ↓ 輸出計劃（等待確認，不寫檔）               │
+      ↓                                          │
+    （確認計劃）                                  │
+      ↓                                          │
+    /opsx:propose                                │
+      ↓ 建立 change artifacts                    │
+      ↓ tasks.md / design.md / spec.md           │
+      ↓                                          │
+    #start-task ──────────────────────────► #start-task
+      ↓ KB 讀取 (start-check)                    ↓ KB 讀取 (start-check)
+      ↓ /opsx:apply 實作 tasks                   ↓ 直接實作
+      ↓ 執行測試                                 ↓ 執行測試
+      ↓                                          ↓
+    #end-task  ────────────────────────────► #end-task
+      ↓ kb.mjs new-trap（若有新陷阱）              ↓ kb.mjs new-trap（若有新陷阱）
+      ↓ /opsx:archive（封存 change）               ↓ （跳過 /opsx:archive）
+      ↓ kb.mjs rebuild                           ↓ kb.mjs rebuild
+      ↓ kb.mjs finish-check（0 errors）           ↓ kb.mjs finish-check（0 errors）
 
 ### v3.1 → v3.2 重構路線
 
@@ -83,13 +135,13 @@ v3.2 採**漸進式、非破壞**設計，v3.1 功能完全保留：
 
 | 階段 | 內容 | 影響範圍 |
 |------|------|----------|
-| **Phase 0**（✅ 目前） | 定義升級邊界、更新 README | 文件，無程式碼異動 |
-| Phase 1 | OpenSpec scaffold + `opsx` wrapper | `init-kb.ps1` 新增產出物 |
-| Phase 2 | Prompt 模板整合 OpenSpec 雙軌流程 | `init-kb.ps1` 三個 prompt template |
-| Phase 3 | `update-kb.ps1` 補 OpenSpec 升級能力 | `update-kb.ps1` |
-| Phase 4 | `kb.mjs finish-check` 補 OpenSpec 靜態驗證 | `kb.mjs` template |
-| Phase 5 | `openspec-cheatsheet.md` 模板化 | `init-kb.ps1` 新增產出物 |
-| Phase 6 | 驗證與回歸 | 測試矩陣 |
+| **Phase 0**（✅） | 定義升級邊界、更新 README | 文件，無程式碼異動 |
+| **Phase 1**（✅） | OpenSpec scaffold + `opsx` wrapper + cheatsheet | `init-kb.ps1` 新增產出物 |
+| **Phase 2**（✅） | Prompt 模板整合 OpenSpec 雙軌流程 | `init-kb.ps1` 三個 prompt template |
+| **Phase 3**（✅） | `update-kb.ps1` 補 OpenSpec 升級能力 | `update-kb.ps1` |
+| **Phase 4**（✅） | `kb.mjs finish-check` 補 OpenSpec 靜態驗證 | `kb.mjs` template |
+| **Phase 5**（🔄 目前） | README 使用者心智模型更新 | `README.md` |
+| Phase 6 | 端對端驗證與回歸 | 測試矩陣 |
 
 > **`-SkipOpenSpec` 參數**（Phase 1 加入）：讓不需要 OpenSpec 的小型專案略過 scaffold，保持純 v3.1 KB 行為。
 
@@ -118,13 +170,21 @@ v3.2 採**漸進式、非破壞**設計，v3.1 功能完全保留：
 ```
 專案根目錄/
 ├── init-kb.ps1                          ← 新專案初始化腳本
-├── update-kb.ps1                        ← 既有知識庫非破壞性升級腳本
-└── .vscode/
+├── update-kb.ps1                        ← 既有知識庫非破壞性升級腳本├── opsx.bat                             ← openspec wrapper（建議不入版控）
+├── opsx.ps1                             ← openspec wrapper（建議不入版控）
+├── openspec-cheatsheet.md               ← opsx 指令速查表└── .vscode/
     ├── settings.json                    ← Copilot prompt 路徑設定
     ├── copilot-instructions.md          ← 單一規範來源（SSOT）
     ├── start-task.prompt.md             ← /start-task：4 層階梯讀取
     ├── start-plan.prompt.md             ← /start-plan：Plan 模式（讀 → 計劃 → 等待確認）
     ├── end-task.prompt.md               ← /end-task：更新 KB + commit 訊息
+    ├── openspec/                        ← OpenSpec 行為規格系統（v3.2）
+    │   ├── config.yaml                  ← openspec CLI 組態
+    │   ├── schemas/                     ← spec JSON Schema
+    │   ├── specs/
+    │   │   └── INDEX.md                 ← 行為規格目錄（新功能前必查）
+    │   ├── changes/                     ← 進行中 change artifacts
+    │   └── archive/                     ← 已封存 change
     └── knowledge/
         ├── INDEX.md                     ← <80 行純導航（第 1 層）
         ├── changelog/
@@ -247,6 +307,33 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 
 ---
 
+## opsx.bat / opsx.ps1
+
+`init-kb.ps1` 與 `update-kb.ps1`（加 `-Apply`）在**專案根目錄**產生兩個 OpenSpec wrapper：
+
+| 檔案 | 用途 |
+|------|------|
+| `opsx.bat` | Windows CMD / PowerShell 用；呼叫 `openspec` CLI 並正確保留 exit code |
+| `opsx.ps1` | PowerShell 原生版；部分環境執行更穩定 |
+
+### 為什麼放在專案根目錄？
+
+`openspec` CLI 需要在 `.vscode/` 目錄下執行（讀取 `config.yaml`），wrapper 省去手動 `cd` 的麻煩：
+
+    .\opsx status
+    .\opsx propose --change my-feature
+    .\opsx archive --change my-feature
+
+### 為什麼建議不入版控？
+
+1. **本機工具依賴**：`openspec` 是全域 npm 套件（`@fission-ai/openspec`），不同開發者版本可能不同或尚未安裝
+2. **非協作必要**：KB + OpenSpec 是個人 AI 工作流程，不需強制所有協作者使用
+3. **自動加 `.gitignore`**：`update-kb.ps1` 的 Section 7 會自動把 `opsx.bat` / `opsx.ps1` 加入 `.gitignore`
+
+若團隊統一採用 OpenSpec 工作流程，可從 `.gitignore` 移除相關條目改為入版控。
+
+---
+
 ## Copilot Chat 指令
 
 初始化完成後，可在 VS Code Copilot Chat 中使用以下三個 `/` 指令：
@@ -296,7 +383,8 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 | `node kb.mjs repair-status` | 列出 pending repeated failure |
 | `node kb.mjs repair-health` | 任務收尾 repair gate，pending / invalid JSONL / secret-like 內容必須為 0 |
 | `node kb.mjs health` | 健康檢查：id 唯一性、檔名 / id 一致、Markdown 連結、UTF-8 BOM、U+FFFD、settings、quickref 行數、index.jsonl 過期 |
-| `node kb.mjs finish-check` | 整合 `taxonomy lint` + `health` + `repair-health`，任務結束前必跑 |
+| `node kb.mjs openspec-check [--strict]` | 驗證 OpenSpec 狀態：`specs/INDEX.md` 存在、未封存 change 狀況、spec 連結有效；預設 warning，`--strict` 升為 error |
+| `node kb.mjs finish-check [--strict]` | 整合 `taxonomy lint` + `health` + `repair-health` + `openspec-check`，任務結束前必跑 |
 
 ---
 
@@ -312,6 +400,7 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 |------|------|
 | （無參數） | 預設執行；已存在的知識庫檔案**不覆蓋**，`settings.json` 永遠不覆蓋 |
 | `-Force` | 強制覆蓋初始化模板檔（`settings.json` 仍不覆蓋）；不建議當成既有知識庫升級方式 |
+| `-SkipOpenSpec` | 略過 OpenSpec scaffold（不產生 `openspec/`、`opsx.bat`、`opsx.ps1`、`openspec-cheatsheet.md`）；適合純 KB 小型專案 |
 
 升級既有知識庫：
 
@@ -327,6 +416,7 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 | `-Backup:$false` | 關閉寫入前備份；預設會備份到 `.vscode/knowledge/backups/` |
 | `-ForceTemplates` | 允許覆蓋 `kb.mjs` 等可執行模板；未指定時只產生 candidate |
 | `-SkipRebuild` | 跳過 `rebuild` / `finish-check` |
+| `-SkipOpenSpec` | 略過 OpenSpec 升級（Section 7）；保留純 v3.1 KB 行為 |
 | `-NoReloadPrompt` | 不輸出 VS Code Reload Window 提示 |
 
 ---
