@@ -1,0 +1,40 @@
+schema: project-feature
+
+context: |
+  # 專案名稱（請填入）
+
+  ## 技術棧
+  （請填入：語言、框架、資料庫、測試框架）
+
+  ## 程式碼路徑
+  （請填入：主要程式碼目錄結構）
+
+  ## 主要模組
+  （請填入：各功能模組說明）
+
+  ## 知識庫 CLI
+  - 啟動任務前：`node .vscode/knowledge/scripts/kb.mjs start-check --module=X --file=path --query="關鍵字"`
+  - 新陷阱：`node .vscode/knowledge/scripts/kb.mjs new-trap --module=X --title="..." --topics=slug`
+  - 重建索引：`node .vscode/knowledge/scripts/kb.mjs rebuild`
+
+  ## 禁止事項
+  - 禁止在 response 使用 fenced code block（VS Code Chat 會隱藏）
+  - 禁止用 PowerShell Set-Content / Get-Content | Set-Content 寫入知識庫（CP950 損毀）
+  - 禁止手動編輯 traps/index.jsonl、by-*.json、topics/{slug}.md AUTO 區
+
+rules:
+  research:
+    - 必須執行 kb.mjs start-check 並記錄命中的 trap 與 topic
+    - 若發現解讀歧義，必須列入「假設確認」段落，動手前須確認
+  proposal:
+    - 必須說明此變更的影響範圍與主要涉及檔案
+    - 禁止靜默選擇解讀：有歧義情境必須在此文件中說明已確認的假設
+  specs:
+    - 所有 Scenario 必須使用 GIVEN / WHEN / THEN 格式
+    - 核心需求使用 MUST 或 SHALL；建議性規則使用 SHOULD；選擇性使用 MAY
+    - Scenario 標頭必須使用四個 # 符號（#### Scenario:）
+  design:
+    - 遵循最小實作原則：不加未要求的抽象層或 config 選項
+  tasks:
+    - 必須包含「測試驗證」群組（不可省略）
+    - 必須包含「知識庫更新」群組（不可省略），包含 rebuild 和 finish-check 步驟

@@ -1,0 +1,113 @@
+name: project-feature
+version: 1
+description: 功能開發流程 — research → proposal → specs → design → tasks
+artifacts:
+  - id: research
+    generates: research.md
+    description: 功能背景調查：現有知識庫、陷阱查閱
+    template: research.md
+    instruction: |
+      在動手實作之前，先閱讀現有知識庫和程式碼，完成背景調查。
+
+      必須執行的查閱步驟：
+      1. 執行 `node .vscode/knowledge/scripts/kb.mjs start-check --module=<模組> --file=<主要檔案> --query="<關鍵字>"`
+      2. 讀 `.vscode/knowledge/INDEX.md` 掌握全貌
+      3. 讀涉及模組的 `modules/{m}/quickref.md`
+      4. 讀 `traps/topics/INDEX.md`，命中主題後讀 `traps/topics/{slug}.md`
+
+      文件段落：
+      - **知識庫查閱結果**：列出相關 trap、topic、quickref 的關鍵發現
+      - **相關陷阱清單**：格式 `trap-NNN: 說明`
+      - **假設確認**：列出所有可能的解讀歧義，需在 proposal 前確認
+
+      保持精簡；目的是讓 proposal 作者有充分背景，不是寫完整技術文件。
+    requires: []
+
+  - id: proposal
+    generates: proposal.md
+    description: 功能提案：為何做、做什麼、影響範圍
+    template: proposal.md
+    instruction: |
+      基於 research.md 的調查結果，撰寫功能提案。
+
+      段落說明：
+      - **為何需要此功能**：1-3 句說明動機或問題
+      - **功能範圍**：條列在 scope 內和 scope 外的項目；必須明確說明邊界
+      - **涉及能力（Capabilities）**：kebab-case 命名，每個對應一個 `specs/<name>/spec.md`
+      - **已知風險**：列出陷阱或副作用（參考 research.md 的陷阱清單）
+
+      禁止：不可靜默選擇解讀歧義，必須在此文件中說明已確認的假設。
+    requires:
+      - research
+
+  - id: specs
+    generates: "specs/**/*.md"
+    description: 行為規格：WHAT — 以 GIVEN/WHEN/THEN 描述可測試行為
+    template: spec.md
+    instruction: |
+      依據 proposal.md 的 Capabilities 段落，為每個能力建立 spec 檔案。
+
+      **路徑規則**：
+      - 新能力：`specs/<capability>/spec.md`
+      - 修改能力：`specs/<capability>/spec.md`（使用現有資料夾名稱）
+
+      **格式規則（嚴格遵守）**：
+      - Delta 區段：`## ADDED Requirements`、`## MODIFIED Requirements`、`## REMOVED Requirements`
+      - 每個需求：`### Requirement: <名稱>`
+      - RFC 2119 關鍵字：MUST / SHALL（強制）、SHOULD（建議）、MAY（選擇）
+      - Scenario 標頭：`#### Scenario: <名稱>`（**必須四個 # 符號**）
+      - Scenario 格式：`- **GIVEN** ...`、`- **WHEN** ...`、`- **THEN** ...`
+      - 每個 Requirement 至少一個正常路徑（happy path）scenario
+    requires:
+      - proposal
+
+  - id: design
+    generates: design.md
+    description: 技術設計：HOW — 架構決策、資料流、修改範圍
+    template: design.md
+    instruction: |
+      以下情況才需要 design.md（任一成立即建立）：
+      - 跨多個 Service / Controller / API 的異動
+      - 新增外部依賴或重大 DB Schema 異動
+      - 安全性、效能或 migration 複雜度高
+
+      段落說明：
+      - **架構決策**：決策: 選了 X，因為... 考慮過 Y，但...
+      - **資料流**：涉及 DB 讀寫時，說明呼叫順序
+      - **涉及檔案**：`- path/to/file.ext（修改說明）`
+
+      遵循最小實作原則：不加未要求的抽象層，不引入新的設計模式除非必要。
+    requires:
+      - proposal
+
+  - id: tasks
+    generates: tasks.md
+    description: 實作清單：含測試驗證步驟
+    template: tasks.md
+    instruction: |
+      依據 specs 和 design，建立可逐步勾選的實作清單。
+
+      **格式規則（嚴格遵守）**：
+      - 群組標題：`## N. <群組名稱>`
+      - 每個任務：`- [ ] N.M <描述>`
+
+      **必要群組**：
+      1. 程式碼修改（依 design.md 的涉及檔案）
+      2. 測試驗證（**此群組不可省略**）
+      3. 知識庫更新（**此群組不可省略**）
+
+      **知識庫更新群組範本**：
+      - `- [ ] N.1 執行 kb.mjs new-trap（如有新陷阱）`
+      - `- [ ] N.2 執行 node .vscode/knowledge/scripts/kb.mjs rebuild`
+      - `- [ ] N.3 執行 kb.mjs finish-check，確認 0 errors`
+    requires:
+      - specs
+      - design
+
+apply:
+  requires: [tasks]
+  tracks: tasks.md
+  instruction: |
+    讀取 proposal.md、specs/、design.md 作為背景，逐步勾選 tasks.md 中的待辦項目。
+    完成每個 task 後立即標記 [x]。遇到阻擋點或歧義時暫停並說明原因。
+    完成所有 task 後提示執行 /opsx:archive。

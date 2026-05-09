@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  VS Code 本機 AI 知識庫初始化腳本（v3.1：4 層階梯 + Agent Guard + repair closure + facets + topics + FTS5）
+  VS Code 本機 AI 知識庫初始化腳本（v3.2：Knowledge Base + OpenSpec 雙軌 — 4 層階梯 + Agent Guard + repair closure + facets + topics + FTS5）
 
 .DESCRIPTION
     在專案 .vscode/ 目錄下建立可隨知識量擴張的結構化 AI 協作知識庫：
@@ -45,7 +45,8 @@
 
 [CmdletBinding()]
 param(
-    [switch]$Force
+    [switch]$Force,
+    [switch]$SkipOpenSpec
 )
 
 Set-StrictMode -Version Latest
@@ -94,7 +95,7 @@ $vscodeDir   = Join-Path $projectRoot '.vscode'
 $kbDir       = Join-Path $vscodeDir 'knowledge'
 $currentMonth = Get-Date -Format 'yyyy-MM'
 
-$gitVersion = 'v3.1'
+$gitVersion = 'v3.2'
 try {
     $gitDescribe = & git describe --tags --always --dirty 2>$null
     if ($LASTEXITCODE -eq 0 -and $gitDescribe) { $gitVersion = $gitDescribe.Trim() }
@@ -103,7 +104,7 @@ try {
 Write-Host ""
 Write-Host "════════════════════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host "   VS Code 本機 AI 知識庫初始化工具 $gitVersion" -ForegroundColor Cyan
-Write-Host "   (v3.1 架構：4 層階梯 + Agent Guard + repair closure)" -ForegroundColor Cyan
+Write-Host "   (v3.2：Knowledge Base + OpenSpec 雙軌流程)" -ForegroundColor Cyan
 Write-Host "════════════════════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "專案根目錄 : $projectRoot"
@@ -112,6 +113,9 @@ Write-Host ""
 
 if ($Force) {
     Write-Host "  [模式] 強制覆蓋已存在的知識庫檔案" -ForegroundColor Magenta
+}
+if ($SkipOpenSpec) {
+    Write-Host "  [模式] 跳過 OpenSpec scaffold（僅建立知識庫結構）" -ForegroundColor Magenta
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -1836,9 +1840,487 @@ try {
 Write-Utf8File -Path (Join-Path $kbDir 'scripts\kb.mjs') -Content $kbScript -Overwrite:$Force
 
 # ─────────────────────────────────────────────────────────────
-# 13. 自動執行 rebuild + finish-check（若 Node 可用）
+# 13. OpenSpec scaffold + opsx wrappers + cheatsheet
 # ─────────────────────────────────────────────────────────────
-Write-Section "13. 自動初始化索引（rebuild + finish-check）"
+if (-not $SkipOpenSpec) {
+    Write-Section "13. OpenSpec scaffold（.vscode/openspec/）"
+
+    $openspecDir = Join-Path $vscodeDir 'openspec'
+
+    # ── config.yaml ──────────────────────────────────────────
+    $openspecConfig = @'
+schema: project-feature
+
+context: |
+  # 專案名稱（請填入）
+
+  ## 技術棧
+  （請填入：語言、框架、資料庫、測試框架）
+
+  ## 程式碼路徑
+  （請填入：主要程式碼目錄結構）
+
+  ## 主要模組
+  （請填入：各功能模組說明）
+
+  ## 知識庫 CLI
+  - 啟動任務前：`node .vscode/knowledge/scripts/kb.mjs start-check --module=X --file=path --query="關鍵字"`
+  - 新陷阱：`node .vscode/knowledge/scripts/kb.mjs new-trap --module=X --title="..." --topics=slug`
+  - 重建索引：`node .vscode/knowledge/scripts/kb.mjs rebuild`
+
+  ## 禁止事項
+  - 禁止在 response 使用 fenced code block（VS Code Chat 會隱藏）
+  - 禁止用 PowerShell Set-Content / Get-Content | Set-Content 寫入知識庫（CP950 損毀）
+  - 禁止手動編輯 traps/index.jsonl、by-*.json、topics/{slug}.md AUTO 區
+
+rules:
+  research:
+    - 必須執行 kb.mjs start-check 並記錄命中的 trap 與 topic
+    - 若發現解讀歧義，必須列入「假設確認」段落，動手前須確認
+  proposal:
+    - 必須說明此變更的影響範圍與主要涉及檔案
+    - 禁止靜默選擇解讀：有歧義情境必須在此文件中說明已確認的假設
+  specs:
+    - 所有 Scenario 必須使用 GIVEN / WHEN / THEN 格式
+    - 核心需求使用 MUST 或 SHALL；建議性規則使用 SHOULD；選擇性使用 MAY
+    - Scenario 標頭必須使用四個 # 符號（#### Scenario:）
+  design:
+    - 遵循最小實作原則：不加未要求的抽象層或 config 選項
+  tasks:
+    - 必須包含「測試驗證」群組（不可省略）
+    - 必須包含「知識庫更新」群組（不可省略），包含 rebuild 和 finish-check 步驟
+'@
+    Write-Utf8File -Path (Join-Path $openspecDir 'config.yaml') -Content $openspecConfig -Overwrite:$Force
+
+    # ── schemas/project-feature/schema.yaml ──────────────────
+    $featureSchema = @'
+name: project-feature
+version: 1
+description: 功能開發流程 — research → proposal → specs → design → tasks
+artifacts:
+  - id: research
+    generates: research.md
+    description: 功能背景調查：現有知識庫、陷阱查閱
+    template: research.md
+    instruction: |
+      在動手實作之前，先閱讀現有知識庫和程式碼，完成背景調查。
+
+      必須執行的查閱步驟：
+      1. 執行 `node .vscode/knowledge/scripts/kb.mjs start-check --module=<模組> --file=<主要檔案> --query="<關鍵字>"`
+      2. 讀 `.vscode/knowledge/INDEX.md` 掌握全貌
+      3. 讀涉及模組的 `modules/{m}/quickref.md`
+      4. 讀 `traps/topics/INDEX.md`，命中主題後讀 `traps/topics/{slug}.md`
+
+      文件段落：
+      - **知識庫查閱結果**：列出相關 trap、topic、quickref 的關鍵發現
+      - **相關陷阱清單**：格式 `trap-NNN: 說明`
+      - **假設確認**：列出所有可能的解讀歧義，需在 proposal 前確認
+
+      保持精簡；目的是讓 proposal 作者有充分背景，不是寫完整技術文件。
+    requires: []
+
+  - id: proposal
+    generates: proposal.md
+    description: 功能提案：為何做、做什麼、影響範圍
+    template: proposal.md
+    instruction: |
+      基於 research.md 的調查結果，撰寫功能提案。
+
+      段落說明：
+      - **為何需要此功能**：1-3 句說明動機或問題
+      - **功能範圍**：條列在 scope 內和 scope 外的項目；必須明確說明邊界
+      - **涉及能力（Capabilities）**：kebab-case 命名，每個對應一個 `specs/<name>/spec.md`
+      - **已知風險**：列出陷阱或副作用（參考 research.md 的陷阱清單）
+
+      禁止：不可靜默選擇解讀歧義，必須在此文件中說明已確認的假設。
+    requires:
+      - research
+
+  - id: specs
+    generates: "specs/**/*.md"
+    description: 行為規格：WHAT — 以 GIVEN/WHEN/THEN 描述可測試行為
+    template: spec.md
+    instruction: |
+      依據 proposal.md 的 Capabilities 段落，為每個能力建立 spec 檔案。
+
+      **路徑規則**：
+      - 新能力：`specs/<capability>/spec.md`
+      - 修改能力：`specs/<capability>/spec.md`（使用現有資料夾名稱）
+
+      **格式規則（嚴格遵守）**：
+      - Delta 區段：`## ADDED Requirements`、`## MODIFIED Requirements`、`## REMOVED Requirements`
+      - 每個需求：`### Requirement: <名稱>`
+      - RFC 2119 關鍵字：MUST / SHALL（強制）、SHOULD（建議）、MAY（選擇）
+      - Scenario 標頭：`#### Scenario: <名稱>`（**必須四個 # 符號**）
+      - Scenario 格式：`- **GIVEN** ...`、`- **WHEN** ...`、`- **THEN** ...`
+      - 每個 Requirement 至少一個正常路徑（happy path）scenario
+    requires:
+      - proposal
+
+  - id: design
+    generates: design.md
+    description: 技術設計：HOW — 架構決策、資料流、修改範圍
+    template: design.md
+    instruction: |
+      以下情況才需要 design.md（任一成立即建立）：
+      - 跨多個 Service / Controller / API 的異動
+      - 新增外部依賴或重大 DB Schema 異動
+      - 安全性、效能或 migration 複雜度高
+
+      段落說明：
+      - **架構決策**：決策: 選了 X，因為... 考慮過 Y，但...
+      - **資料流**：涉及 DB 讀寫時，說明呼叫順序
+      - **涉及檔案**：`- path/to/file.ext（修改說明）`
+
+      遵循最小實作原則：不加未要求的抽象層，不引入新的設計模式除非必要。
+    requires:
+      - proposal
+
+  - id: tasks
+    generates: tasks.md
+    description: 實作清單：含測試驗證步驟
+    template: tasks.md
+    instruction: |
+      依據 specs 和 design，建立可逐步勾選的實作清單。
+
+      **格式規則（嚴格遵守）**：
+      - 群組標題：`## N. <群組名稱>`
+      - 每個任務：`- [ ] N.M <描述>`
+
+      **必要群組**：
+      1. 程式碼修改（依 design.md 的涉及檔案）
+      2. 測試驗證（**此群組不可省略**）
+      3. 知識庫更新（**此群組不可省略**）
+
+      **知識庫更新群組範本**：
+      - `- [ ] N.1 執行 kb.mjs new-trap（如有新陷阱）`
+      - `- [ ] N.2 執行 node .vscode/knowledge/scripts/kb.mjs rebuild`
+      - `- [ ] N.3 執行 kb.mjs finish-check，確認 0 errors`
+    requires:
+      - specs
+      - design
+
+apply:
+  requires: [tasks]
+  tracks: tasks.md
+  instruction: |
+    讀取 proposal.md、specs/、design.md 作為背景，逐步勾選 tasks.md 中的待辦項目。
+    完成每個 task 後立即標記 [x]。遇到阻擋點或歧義時暫停並說明原因。
+    完成所有 task 後提示執行 /opsx:archive。
+'@
+    Write-Utf8File -Path (Join-Path $openspecDir 'schemas\project-feature\schema.yaml') -Content $featureSchema -Overwrite:$Force
+
+    # ── schemas/project-bugfix/schema.yaml ───────────────────
+    $bugfixSchema = @'
+name: project-bugfix
+version: 1
+description: Bug 修復流程（輕量）— proposal → specs → tasks
+artifacts:
+  - id: proposal
+    generates: proposal.md
+    description: 問題提案：症狀、根因、修正方向
+    template: proposal.md
+    instruction: |
+      撰寫 bugfix 提案，說明問題、根因和修正方向。
+
+      段落說明：
+      - **症狀**：使用者或系統觀察到的異常行為
+      - **根本原因**：程式碼層面的根因，說明為何現有邏輯有缺陷
+      - **修正方向**：說明修正策略（不是實作細節，是方向）
+      - **已知風險 / 副作用**：此修正可能影響哪些相關功能
+
+      對應的 trap 編號（若已存在）：標注在「症狀」段末尾，格式 `（參考 trap-NNN）`。
+      若尚未有 trap，在 tasks 完成後執行 kb.mjs new-trap 登錄。
+    requires: []
+
+  - id: specs
+    generates: "specs/**/*.md"
+    description: 修正規格：WHAT — 描述修正後正確行為
+    template: spec.md
+    instruction: |
+      依據 proposal.md，為受影響的能力撰寫 delta spec。
+
+      **格式規則（嚴格遵守）**：
+      - Delta 區段：`## ADDED Requirements`、`## MODIFIED Requirements`、`## REMOVED Requirements`
+      - 每個需求：`### Requirement: <名稱>`
+      - RFC 2119 關鍵字：MUST / SHALL（強制）、SHOULD（建議）、MAY（選擇）
+      - Scenario 標頭：`#### Scenario: <名稱>`（**必須四個 #**）
+      - Scenario 格式：`- **GIVEN** ...`、`- **WHEN** ...`、`- **THEN** ...`
+
+      Spec 是「修正後應有的行為契約」；不是描述現有 bug。
+    requires:
+      - proposal
+
+  - id: tasks
+    generates: tasks.md
+    description: 實作清單：含程式碼修改、測試、知識庫更新步驟
+    template: tasks.md
+    instruction: |
+      依據 proposal 和 specs，建立可逐步勾選的修復步驟清單。
+
+      **格式規則（嚴格遵守）**：
+      - 群組標題：`## N. <群組名稱>`
+      - 每個任務：`- [ ] N.M <描述>`
+
+      **必要群組**：
+      1. 程式碼修改（每個受影響檔案至少一個 task）
+      2. 測試驗證（**不可省略**）
+      3. 知識庫更新（**不可省略**）
+
+      **知識庫更新群組範本**：
+      - `kb.mjs new-trap --module=<模組> --title="..." --topics=<slug> --symptoms="..."`
+      - `node .vscode/knowledge/scripts/kb.mjs rebuild`
+      - `kb.mjs finish-check`
+    requires:
+      - specs
+
+apply:
+  requires: [tasks]
+  tracks: tasks.md
+  instruction: |
+    讀取 proposal.md 和 specs/ 作為背景，逐步勾選 tasks.md 中的待辦項目。
+    完成每個 task 後立即標記 [x]。遇到阻擋點暫停並說明原因。
+    全部 task 完成後，確認測試通過並執行知識庫更新，再提示 /opsx:archive。
+'@
+    Write-Utf8File -Path (Join-Path $openspecDir 'schemas\project-bugfix\schema.yaml') -Content $bugfixSchema -Overwrite:$Force
+
+    # ── specs/INDEX.md ────────────────────────────────────────
+    $specsIndex = @'
+# OpenSpec 模組規格目錄
+
+> **更新**：（請填入初次建立日期）
+> **說明**：每份 `spec.md` 為模組的「行為契約」，AI 可僅讀本檔系列回答模組行為問題，
+>          不需逐一翻 `.vscode/knowledge/traps/` 個別陷阱。
+
+---
+
+## 已完成規格
+
+| 模組 | 檔案 | Requirements 數 | 主要來源 topics |
+|------|------|----------------|----------------|
+| （尚無規格，累積 1–2 個 change 後填入） | — | — | — |
+
+---
+
+## 待補規格
+
+| 模組 | 優先度 | 主要來源 topics |
+|------|--------|----------------|
+| （依專案性質填入） | 中 | — |
+
+---
+
+## 更新規範
+
+1. 新增 Requirement 時更新本 INDEX 的 Requirements 數欄位
+2. 每個 spec.md 標頭的「更新日期」需同步
+3. spec.md 內容變更後，若涉及新陷阱，需同步更新 trap 的防呆原則欄位
+4. **不是** openspec change 的 spec（change 的 specs 放在 `.vscode/openspec/changes/{name}/specs/`）
+
+---
+
+## 與知識庫的分工
+
+| 層級 | 存放位置 | 內容 |
+|------|---------|------|
+| 行為契約（What） | `.vscode/openspec/specs/{module}/spec.md` | 模組 MUST/SHALL 規則，GIVEN/WHEN/THEN 場景 |
+| 陷阱紀錄（Why/How） | `.vscode/knowledge/traps/trap-NNN.md` | 具體實作細節、根因分析、修正歷史 |
+| 模組索引（Where） | `.vscode/knowledge/modules/{m}/quickref.md` | 檔案路徑、API 列表、關聯模組 |
+'@
+    Write-Utf8File -Path (Join-Path $openspecDir 'specs\INDEX.md') -Content $specsIndex -Overwrite:$Force
+
+    # ── changes/ 目錄 ─────────────────────────────────────────
+    Write-Utf8File -Path (Join-Path $openspecDir 'changes\.gitkeep') -Content "" -Overwrite:$Force
+    Write-Utf8File -Path (Join-Path $openspecDir 'changes\archive\.gitkeep') -Content "" -Overwrite:$Force
+
+    # ─────────────────────────────────────────────────────────
+    # 14. opsx wrapper scripts（專案根目錄）
+    # ─────────────────────────────────────────────────────────
+    Write-Section "14. opsx wrapper（根目錄 opsx.bat / opsx.ps1）"
+
+    $opsxBat = @'
+@echo off
+pushd "%~dp0.vscode"
+openspec %*
+set _EC=%ERRORLEVEL%
+popd
+exit /b %_EC%
+'@
+    # opsx wrappers 不依 $Force 覆蓋；若已存在表示使用者已手動設置，不覆蓋
+    Write-Utf8File -Path (Join-Path $projectRoot 'opsx.bat') -Content $opsxBat
+
+    $opsxPs1 = @'
+param([Parameter(ValueFromRemainingArguments=$true)]$passThrough)
+Push-Location (Join-Path $PSScriptRoot ".vscode")
+openspec @passThrough
+$ec = $LASTEXITCODE
+Pop-Location
+exit $ec
+'@
+    Write-Utf8File -Path (Join-Path $projectRoot 'opsx.ps1') -Content $opsxPs1
+
+    # ─────────────────────────────────────────────────────────
+    # 15. openspec-cheatsheet.md（指令速查）
+    # ─────────────────────────────────────────────────────────
+    Write-Section "15. openspec-cheatsheet.md（指令速查）"
+
+    $cheatsheet = @'
+# OpenSpec 指令速查
+
+> **根目錄**：`.vscode/openspec/`
+> **包裝腳本**：`opsx.bat`（CMD）/ `opsx.ps1`（PowerShell）— 放在**專案根目錄**，不入版控
+> **執行位置**：從**專案根目錄**執行 `opsx`，無需手動切換目錄
+
+---
+
+## 快速上手
+
+在 PowerShell 中從專案根執行：
+
+    .\opsx <子命令>
+
+在 CMD 中：
+
+    opsx <子命令>
+
+---
+
+## 常用指令
+
+### 查看現有 Changes
+
+    .\opsx list
+
+### 查看 Change 完成狀態
+
+    .\opsx status --change <change-name>
+    .\opsx status --change <change-name> --json
+
+### 建立新 Change（功能開發）
+
+    .\opsx new change <change-name>
+
+> 預設使用 `project-feature` schema（research → proposal → specs → design → tasks）。
+> Change 目錄產生於 `.vscode/openspec/changes/<change-name>/`。
+
+### 建立新 Change（Bug 修復）
+
+    .\opsx new change <change-name> --schema project-bugfix
+
+> `project-bugfix` 流程：proposal → specs → tasks（省略 research / design）。
+
+### 取得 Artifact 撰寫指引
+
+    .\opsx instructions <artifact-id> --change <change-name>
+    .\opsx instructions <artifact-id> --change <change-name> --json
+
+artifact-id 可為：`research` / `proposal` / `specs` / `design` / `tasks`
+
+### Apply 指引（查看下一個要實作的 task）
+
+    .\opsx instructions apply --change <change-name> --json
+
+### 封存完成的 Change
+
+    .\opsx archive <change-name>
+
+封存後的目錄：`.vscode/openspec/changes/archive/YYYY-MM-DD-<change-name>/`
+
+---
+
+## 本專案 Schemas
+
+| Schema | 流程 | 適用時機 |
+|--------|------|---------|
+| `project-feature` | research → proposal → specs → design → tasks | 新功能、規格變更、行為契約調整 |
+| `project-bugfix` | proposal → specs → tasks | Bug 修復（輕量，省略調查和設計） |
+
+---
+
+## 目錄結構
+
+    .vscode/openspec/
+    ├── config.yaml               # 專案設定（預設 schema: project-feature）
+    ├── schemas/
+    │   ├── project-feature/      # 功能開發 schema
+    │   └── project-bugfix/       # Bug 修復 schema
+    ├── specs/                    # 模組行為規格（長期維護）
+    │   └── INDEX.md              # 規格索引（所有模組 Requirements 數量）
+    └── changes/                  # 進行中的 Changes
+        └── archive/              # 封存的 Changes
+
+---
+
+## AI 指令（Copilot Chat Slash Commands）
+
+| 指令 | 說明 |
+|------|------|
+| `/opsx:explore` | 進入探索模式，釐清需求與設計假設（不動手實作） |
+| `/opsx:propose` | 建立新 change 並一次產出全部 artifacts |
+| `/opsx:apply` | 實作 change 的 tasks（逐一執行） |
+| `/opsx:archive` | 封存完成的 change |
+
+> 這些是 AI Copilot 的 skill 指令，不是 CLI 命令。
+
+---
+
+## 完整開發流程（搭配知識庫）
+
+    Step 0  /opsx:explore        釐清需求邊界與設計假設          ← #start-plan 觸發
+    Step 1  /opsx:propose        建立 change，產出 artifacts     ← 確認計劃後手動觸發
+    Step 2  kb.mjs start-check   知識庫預讀（陷阱、主題、quickref）← #start-task 觸發
+    Step 3  /opsx:apply          實作 tasks                      ← #start-task 執行
+    Step 4  （測試指令）          執行測試，確認 0 failures         ← #start-task 執行
+    Step 5  kb.mjs new-trap      若發現新陷阱，登錄知識庫          ← #end-task 執行
+    Step 6  /opsx:archive        封存 change                     ← #end-task 執行
+    Step 7  kb.mjs rebuild       重建知識庫索引                   ← #end-task 執行
+    Step 8  kb.mjs finish-check  體檢（errors=0）                 ← #end-task 執行
+
+---
+
+## Prompt 入口對照
+
+| Prompt | 涵蓋步驟 | 用途 | 注意 |
+|--------|---------|------|------|
+| `#start-plan` | Step 0, Step 2 | 分析需求、讀 KB、輸出計劃表，**等待確認才繼續** | Read-only；Step 1 須確認後手動觸發 |
+| `#start-task` | Step 0~4 | KB 讀取 + 實作 + 測試 | Bug 修復跳過 Step 0~1 |
+| `#end-task` | Step 5~8 | KB 更新 + archive + rebuild + finish-check | archive（Step 6）在 rebuild（Step 7）之前 |
+
+---
+
+## 依任務類型選擇流程
+
+### 新功能 / 規格變更
+
+    #start-plan   → 探索需求 (Step 0) + KB 讀取 (Step 2) + 輸出計劃
+    確認計劃
+    /opsx:propose → 建立 change artifacts (Step 1)  ← 手動觸發
+    #start-task   → KB 重讀 + /opsx:apply 實作 + 測試 (Step 2~4)
+    #end-task     → KB 更新 + archive + rebuild + finish-check (Step 5~8)
+
+### Bug 修復 / 陷阱修補
+
+    #start-task   → KB 讀取 + 直接實作 + 測試 (Step 2~4)  ← 跳過 Step 0~1
+    #end-task     → KB 更新 + rebuild + finish-check (Step 5~8)  ← 跳過 Step 6
+
+---
+
+## 重要注意事項
+
+- **OpenSpec ≠ 知識庫**：OpenSpec 記錄「WHAT / 行為契約」，知識庫記錄「WHY / 根因與陷阱」
+- `#start-plan` 是 Read-only，確認前不寫入；`/opsx:propose` 才是實際建立 change 的寫入動作
+- 修改 `.vscode/openspec/specs/` 後必須同步更新 `specs/INDEX.md` 的 Requirements 數量
+- Step 6（`/opsx:archive`）必須在 Step 7（`kb.mjs rebuild`）之前，封存後的 spec 連結才能被 FTS 索引
+'@
+    Write-Utf8File -Path (Join-Path $vscodeDir 'openspec-cheatsheet.md') -Content $cheatsheet -Overwrite:$Force
+
+    Write-Host "  [提示] 建議在 .gitignore 加入：/opsx.bat 與 /opsx.ps1（wrapper 為本機工具）" -ForegroundColor Cyan
+}
+
+# ─────────────────────────────────────────────────────────────
+# 16. 自動執行 rebuild + finish-check（若 Node 可用）
+# ─────────────────────────────────────────────────────────────
+Write-Section "16. 自動初始化索引（rebuild + finish-check）"
 
 $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
 if ($nodeCmd) {
@@ -1877,9 +2359,17 @@ Write-Host "  1. 填入 .vscode/copilot-instructions.md 的「技術棧」「專
 Write-Host "  2. 填入 .vscode/knowledge/INDEX.md 的「Quick Context」與「模組導航」" -ForegroundColor Gray
 Write-Host "  3. 在 Copilot Chat 輸入 '/' 並選擇 'start-task' / 'start-plan' / 'end-task'" -ForegroundColor Gray
 Write-Host "  4. 累積 1–2 個 trap 後，把常見主題加入 .vscode/knowledge/traps/topics-taxonomy.yml" -ForegroundColor Gray
+if (-not $SkipOpenSpec) {
+    Write-Host "  5. 填入 .vscode/openspec/config.yaml 的 context 區（技術棧、程式碼路徑、模組）" -ForegroundColor Gray
+    Write-Host "  6. 執行 .\opsx new change <change-name> 建立第一個 OpenSpec change" -ForegroundColor Gray
+}
 Write-Host ""
 Write-Host "建議在 .gitignore 加入：" -ForegroundColor White
 Write-Host "    .vscode/" -ForegroundColor Gray
+if (-not $SkipOpenSpec) {
+    Write-Host "    /opsx.bat" -ForegroundColor Gray
+    Write-Host "    /opsx.ps1" -ForegroundColor Gray
+}
 Write-Host "（每位協作者各自維護自己的本機 AI 知識庫，不必強制共用）" -ForegroundColor DarkGray
 Write-Host ""
 

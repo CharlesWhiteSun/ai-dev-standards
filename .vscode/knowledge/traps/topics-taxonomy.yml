@@ -1,0 +1,48 @@
+# 主題分類學（Topics Taxonomy）— 知識庫 v3 主題白名單
+#
+# 規則：
+#   1. 每個 trap 的 frontmatter `topics:` 欄位只能使用本檔登記的 slug
+#   2. 新增前先 grep 既有 slug 確認無重複；命名一律 kebab-case
+#   3. 變更後執行：node .vscode/knowledge/scripts/kb.mjs taxonomy lint
+#
+# 欄位說明：
+#   slug      唯一短代號（kebab-case），會出現在 trap.frontmatter.topics 與檔名 topics/{slug}.md
+#   name      顯示名稱（中英文皆可）
+#   desc      一句話定義
+#   keywords  協助 AI 自動命中本主題的關鍵字陣列
+
+topics:
+  - slug: agent-runtime-failure
+    name: Agent runtime failure 閉環
+    desc: AI Agent 工具/命令失敗後需記錄 fingerprint、停止原樣重試，並升級為 repair guard 或 trap
+    keywords: [Agent, repair-record, repair-health, fingerprint, repeated failure]
+
+  - slug: tool-search-visibility
+    name: 工具搜尋可見性與 .vscode 讀取
+    desc: `.vscode`、local knowledge 或 gitignored 路徑可能被一般搜尋忽略，需改用直接讀取、列目錄或 include ignored
+    keywords: [.vscode, search, include ignored, read_file, list_dir, knowledge]
+
+  - slug: command-preflight
+    name: 命令執行前 preflight
+    desc: 已知錯誤或高風險 shell 指令需先由 repair-preflight 檢查，避免 Agent 原樣重複執行
+    keywords: [preflight, command, PowerShell, terminal, retry]
+
+  - slug: prompt-agent-compat
+    name: VS Code prompt agent 相容性
+    desc: VS Code prompt frontmatter 的 agent 值需以本機診斷為準，例如某些環境使用 Plan 而非 lowercase plan
+    keywords: [prompt, agent, Plan, plan, frontmatter]
+
+  - slug: vscode-settings-encoding
+    name: VS Code settings encoding id
+    desc: VS Code settings 的 files.encoding 必須使用合法 encoding id，例如 utf8，而不是 utf-8
+    keywords: [settings.json, files.encoding, utf8, utf-8, VS Code]
+
+  - slug: powershell-encoding
+    name: PowerShell UTF-8 編碼損毀
+    desc: PowerShell Set-Content / Get-Content 以系統 ANSI 處理 UTF-8 檔案，導致中文 Blade/MD 檔案損毀
+    keywords: [PowerShell, Set-Content, UTF-8, CP950, BOM, 編碼損毀]
+
+  - slug: misc
+    name: 雜項
+    desc: 尚未分類或一次性的陷阱
+    keywords: []
