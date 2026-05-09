@@ -2,12 +2,14 @@
 
 透過一鍵 PowerShell 腳本，在任何專案中建立**可隨知識量擴張的結構化 AI 協作知識庫**，讓 GitHub Copilot Chat 在每次對話中都能高效率地讀取歷史踩坑、遵守統一規範，並在任務結束時自動歸檔新陷阱。
 
-> 適用 v3.1 架構：**4 層階梯 + facets + topics + SQLite FTS5 全文檢索 + Agent Guard / repair closure**。
+> **v3.1（目前版本）**：**4 層階梯 + facets + topics + SQLite FTS5 全文檢索 + Agent Guard / repair closure**
+> **v3.2（規劃中）**：v3.1 基礎上加入 **OpenSpec 雙軌流程**（行為規格 + 知識庫 + Prompt 工作流程）
 
 ---
 
 ## 目錄
 
+- [v3.2 升級路線（KB + OpenSpec）](#v32-升級路線kb--openspec)
 - [核心特色](#核心特色)
 - [建立的目錄結構](#建立的目錄結構)
 - [4 層階梯閱讀路徑](#4-層階梯閱讀路徑)
@@ -20,6 +22,76 @@
 - [系統需求](#系統需求)
 - [注意事項](#注意事項)
 - [授權條款](#授權條款)
+
+---
+
+## v3.2 升級路線（KB + OpenSpec）
+
+> **v3.1** = Knowledge Base only（4 層階梯 + facets + topics + Agent Guard + repair closure + finish-check）
+> **v3.2** = Knowledge Base + OpenSpec 雙軌（在 v3.1 基礎上加入行為規格層）
+
+### 兩套系統分工
+
+| 維度 | OpenSpec（`.vscode/openspec/`）| 知識庫（`.vscode/knowledge/`）|
+|------|----------------------|-------------------------------|
+| **回答問題** | WHAT（行為契約、需求規格）| WHY/HOW-NOT-TO（根因、修正歷程）|
+| **觸發時機** | 新功能 / 規格變更 / 跨模組行為設計 | 踩坑、bug 修復、設計決策補錄 |
+| **入口指令** | `/opsx:explore`、`/opsx:propose` | `kb.mjs new-trap` |
+| **結束動作** | `/opsx:archive` → `kb.mjs rebuild` | `kb.mjs rebuild` |
+| **產出位置** | `.vscode/openspec/changes/{name}/`（change artifacts）`.vscode/openspec/specs/{module}/`（行為契約）| `traps/trap-NNN.md`（陷阱）`traps/topics/{slug}.md`（主題集群）|
+
+### v3.2 完整開發流程
+
+初始化或升級後，可在 Copilot Chat 以以下流程作業：
+
+    Step 0  /opsx:explore        釐清需求邊界與設計假設          ← #start-plan 觸發
+    Step 1  /opsx:propose        建立 change，產出 artifacts     ← 確認計劃後手動觸發
+    Step 2  kb.mjs start-check   知識庫預讀（陷阱、主題、quickref）← #start-task 觸發
+    Step 3  /opsx:apply          實作 tasks                      ← #start-task 執行
+    Step 4  （語言對應測試指令）  執行測試，確認 0 failures         ← #start-task 執行
+    Step 5  kb.mjs new-trap      若發現新陷阱，登錄知識庫          ← #end-task 執行
+    Step 6  /opsx:archive        封存 change                     ← #end-task 執行
+    Step 7  kb.mjs rebuild       重建知識庫索引                   ← #end-task 執行
+    Step 8  kb.mjs finish-check  體檢（errors=0）                 ← #end-task 執行
+
+### Prompt 入口對照（v3.2）
+
+| Prompt | 涵蓋步驟 | 用途 | 注意 |
+|--------|---------|------|------|
+| `#start-plan` | Step 0, Step 2 | 分析需求、讀 KB、輸出計劃表，**等待確認才繼續** | Read-only；Step 1 須確認後手動觸發 |
+| `#start-task` | Step 0~4 | KB 讀取 + 實作 + 測試 | Bug 修復跳過 Step 0~1 |
+| `#end-task` | Step 5~8 | KB 更新 + archive + rebuild + finish-check | archive（Step 6）在 rebuild（Step 7）之前 |
+
+### 依任務類型選擇流程
+
+**新功能 / 規格變更**：
+
+    #start-plan   → 探索需求 + KB 讀取 + 輸出計劃
+    確認計劃
+    /opsx:propose → 建立 change artifacts（Step 1）
+    #start-task   → KB 重讀 + /opsx:apply 實作 + 測試（Step 2~4）
+    #end-task     → KB 更新 + archive + rebuild + finish-check（Step 5~8）
+
+**Bug 修復 / 陷阱修補**：
+
+    #start-task   → KB 讀取 + 直接實作 + 測試（Step 2~4，跳過 Step 0~1）
+    #end-task     → KB 更新 + rebuild + finish-check（Step 5~8，跳過 Step 6）
+
+### v3.1 → v3.2 重構路線
+
+v3.2 採**漸進式、非破壞**設計，v3.1 功能完全保留：
+
+| 階段 | 內容 | 影響範圍 |
+|------|------|----------|
+| **Phase 0**（✅ 目前） | 定義升級邊界、更新 README | 文件，無程式碼異動 |
+| Phase 1 | OpenSpec scaffold + `opsx` wrapper | `init-kb.ps1` 新增產出物 |
+| Phase 2 | Prompt 模板整合 OpenSpec 雙軌流程 | `init-kb.ps1` 三個 prompt template |
+| Phase 3 | `update-kb.ps1` 補 OpenSpec 升級能力 | `update-kb.ps1` |
+| Phase 4 | `kb.mjs finish-check` 補 OpenSpec 靜態驗證 | `kb.mjs` template |
+| Phase 5 | `openspec-cheatsheet.md` 模板化 | `init-kb.ps1` 新增產出物 |
+| Phase 6 | 驗證與回歸 | 測試矩陣 |
+
+> **`-SkipOpenSpec` 參數**（Phase 1 加入）：讓不需要 OpenSpec 的小型專案略過 scaffold，保持純 v3.1 KB 行為。
 
 ---
 
