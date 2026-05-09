@@ -1658,7 +1658,7 @@ function checkMarkdownLinks(file, text) {
     if (!withoutAnchor) continue;
     const decoded = decodeURIComponent(withoutAnchor);
     const target = path.resolve(path.dirname(file), decoded);
-    if (!target.startsWith(KB_ROOT) || !existsSync(target)) {
+    if (!target.startsWith(VSCODE_ROOT) || !existsSync(target)) {
       issues.push(`${relFile}: broken markdown link ${rawTarget}`);
     }
   }
@@ -1694,11 +1694,84 @@ function collectWorkspaceSettingsHealthIssues() {
   return issues;
 }
 
+// =================================================================
+//  openspec-check
+// =================================================================
+async function cmdOpenspecCheck(args) {
+  const opts = parseOpts(args);
+  const strict = 'strict' in opts;
+  const warnings = [];
+  const errors   = [];
+
+  const OPENSPEC_DIR   = path.join(VSCODE_ROOT, 'openspec');
+  const specsIndexPath = path.join(OPENSPEC_DIR, 'specs', 'INDEX.md');
+  const changesDir     = path.join(OPENSPEC_DIR, 'changes');
+  const archiveDir     = path.join(changesDir, 'archive');
+
+  if (!existsSync(OPENSPEC_DIR)) {
+    warnings.push('openspec/ not found — run init-kb.ps1 or update-kb.ps1 -Apply to scaffold OpenSpec');
+  } else {
+    // Check 1: specs/INDEX.md exists
+    if (!existsSync(specsIndexPath)) {
+      warnings.push('openspec/specs/INDEX.md missing — create and track requirement counts per module');
+    }
+
+    // Check 2: unarchived changes with tasks
+    if (existsSync(changesDir)) {
+      let changeDirs = [];
+      try {
+        changeDirs = (await readdir(changesDir, { withFileTypes: true }))
+          .filter(d => d.isDirectory() && d.name !== 'archive')
+          .map(d => d.name);
+      } catch { /* ignore */ }
+      for (const name of changeDirs) {
+        const tasksPath = path.join(changesDir, name, 'tasks.md');
+        if (!existsSync(tasksPath)) continue;
+        const isArchived = existsSync(path.join(archiveDir, name));
+        if (isArchived) continue;
+        const content = await readUtf8(tasksPath);
+        const incomplete = (content.match(/^\s*-\s*\[\s*\]/gm) || []).length;
+        const completed  = (content.match(/^\s*-\s*\[x\]/gmi) || []).length;
+        if (incomplete > 0) {
+          warnings.push(`openspec/changes/${name}: ${incomplete} incomplete task(s) (${completed} done) — run '.\\opsx status --change ${name}'`);
+        } else if (completed > 0) {
+          warnings.push(`openspec/changes/${name}: all ${completed} task(s) done but not archived — run /opsx:archive`);
+        }
+      }
+    }
+
+    // Check 3: spec links in trap topics exist on disk
+    if (existsSync(TOPICS_DIR)) {
+      for await (const topicFile of walk(TOPICS_DIR)) {
+        if (!topicFile.endsWith('.md')) continue;
+        const content = await readUtf8(topicFile);
+        const re = /openspec\/specs\/[^\s)#"']+/g;
+        let m;
+        while ((m = re.exec(content)) !== null) {
+          const rel = m[0];
+          const abs = path.join(VSCODE_ROOT, rel);
+          if (!existsSync(abs)) {
+            warnings.push(`${path.basename(topicFile)}: broken spec link '${rel}' — run /opsx:archive then kb.mjs rebuild`);
+          }
+        }
+      }
+    }
+  }
+
+  const total = warnings.length + errors.length;
+  const note  = strict ? ' (strict: warnings treated as errors)' : ' (use --strict to treat warnings as errors)';
+  console.log(`[openspec-check] issues=${total}${note}`);
+  for (const e of errors)   console.error('  ERROR ' + e);
+  for (const w of warnings) { if (strict) console.error('  ERROR ' + w); else console.warn('  WARN  ' + w); }
+  if (errors.length || (strict && warnings.length)) process.exitCode = 1;
+}
+
 async function cmdFinishCheck(args) {
   await cmdTaxonomy(['lint']);
   await cmdHealth();
   const previousExitCode = process.exitCode || 0;
   await cmdRepairHealth(args);
+  await cmdOpenspecCheck(args);
   if (previousExitCode || process.exitCode) process.exitCode = 1;
 }
 
@@ -1867,7 +1940,8 @@ Commands:
   repair-status          檢查 repeated failure pending repair
   repair-health          任務收尾 repair gate，pending/secret/invalid 必須為 0
   health                 健康檢查
-  finish-check           taxonomy lint + health + repair-health
+  openspec-check         OpenSpec 驗證：specs/INDEX.md、未封存 change、斷開 spec 連結 [--strict]
+  finish-check           taxonomy lint + health + repair-health + openspec-check
 `;
 
 const [, , cmd, ...rest] = process.argv;
@@ -1888,6 +1962,7 @@ try {
     case 'repair-status': await cmdRepairStatus(rest); break;
     case 'repair-health': await cmdRepairHealth(rest); break;
     case 'health': await cmdHealth(); break;
+    case 'openspec-check': await cmdOpenspecCheck(rest); break;
     case 'finish-check': await cmdFinishCheck(rest); break;
     default: console.log(HELP); break;
   }
