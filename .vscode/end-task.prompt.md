@@ -37,7 +37,14 @@ description: "任務結束後，更新知識庫並輸出 Commit 訊息"
 
   若有 unresolved repeated failure，必須新增/更新 operational trap 或標註 false positive，再繼續收尾。
 
-7. **執行**：
+7. **若本任務有建立 OpenSpec change**（新功能 / 規格變更任務）：
+
+   a. 確認所有 tasks 已完成：`.\opsx status --change <change-name>`
+   b. 執行 `/opsx:archive` 封存 change（archive 後立即接 rebuild）
+
+   > 若為純 bug 修復（無 OpenSpec change），跳過此步驟。
+
+8. **執行**：
 
        node .vscode/knowledge/scripts/kb.mjs rebuild
   node .vscode/knowledge/scripts/kb.mjs finish-check
@@ -48,7 +55,7 @@ description: "任務結束後，更新知識庫並輸出 Commit 訊息"
    - 重建 `traps/topics/{slug}.md` 與 `topics/INDEX.md`（AUTO 區）
   - 重建 `traps/fts.db`（SQLite FTS5 全文檢索；需 Node 22.5+）
 
-8. **輸出 Commit 訊息**（純文字段落，禁止 fenced code block；格式見 `copilot-instructions.md`「Commit 訊息格式」）
+9. **輸出 Commit 訊息**（純文字段落，禁止 fenced code block；格式見 `copilot-instructions.md`「Commit 訊息格式」）
 
 ## 本次任務摘要
 

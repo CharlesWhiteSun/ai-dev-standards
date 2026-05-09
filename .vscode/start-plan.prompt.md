@@ -8,6 +8,16 @@ description: "規劃模式：讀取精簡知識庫 → 輸出執行計劃 → �
 > **重要：本 prompt 僅進行知識庫讀取與規劃，嚴禁在取得使用者確認前執行任何寫入操作。**
 > 規範定義於 `copilot-instructions.md`（單一真實來源）。
 
+## OpenSpec 預讀（新功能 / 規格變更才需要）
+
+若任務屬於**新功能**、**規格變更**或**行為契約調整**：
+
+1. 查 [openspec/specs/INDEX.md](openspec/specs/INDEX.md) 確認是否已有對應規格；若有，讀取後才輸出計劃
+2. 以 `/opsx:explore` 釐清需求邊界
+3. 以 `/opsx:propose` 建立 change（**待使用者確認計劃後**再手動觸發）
+
+> 若為 **bug 修復 / 陷阱修補**，跳過此區塊，直接從「步驟一」開始。
+
 ## 步驟一：讀取知識庫與操作守門
 
 0. 先讀 [agent/INDEX.md](knowledge/agent/INDEX.md)，確認 Agent 操作守門規則。

@@ -8,6 +8,7 @@
 **程式碼路徑**：（請填入）
 **測試**：（請填入）
 **Agent 操作守門**：[agent/INDEX.md](agent/INDEX.md)
+**OpenSpec 行為規格**：[../openspec/specs/INDEX.md](../openspec/specs/INDEX.md)（WHAT；新功能前必查）
 
 ## 4 層階梯閱讀路徑
 

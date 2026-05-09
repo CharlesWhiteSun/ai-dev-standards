@@ -7,6 +7,16 @@ description: "開始新任務前，自動載入精簡知識庫並啟動問題分
 
 > 規範定義於 `copilot-instructions.md`（單一真實來源），此 prompt 僅啟動讀取流程。
 
+## OpenSpec 預讀（新功能 / 規格變更才需要）
+
+若任務屬於**新功能**、**規格變更**或**行為契約調整**：
+
+1. 查 [openspec/specs/INDEX.md](openspec/specs/INDEX.md) 確認是否已有對應規格；若有，讀取後才進行知識庫讀取
+2. 以 `/opsx:explore` 釐清需求邊界
+3. 以 `/opsx:propose` 建立 change
+
+> 若為 **bug 修復 / 陷阱修補**，跳過此區塊，直接從「啟動步驟」開始。
+
 ## 啟動步驟（依序執行）
 
 0. **先讀 Agent 操作守門**：[agent/INDEX.md](knowledge/agent/INDEX.md)

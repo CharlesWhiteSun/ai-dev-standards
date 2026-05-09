@@ -54,14 +54,26 @@
 
 > 詳情見 `.vscode/knowledge/INDEX.md`。
 
-### 任務開始前（4 層階梯讀取）
+### 任務開始前（OpenSpec + 知識庫雙軌啟動）
+
+#### Step 0 — OpenSpec 意圖確認（新功能 / 規格變更必做）
+
+若任務屬於**新功能**、**規格變更**或**行為契約調整**：
+
+1. 以 `/opsx:explore` 進入探索模式，與使用者釐清需求邊界與設計假設
+2. 以 `/opsx:propose` 建立 OpenSpec change，產出 `.vscode/openspec/changes/{name}/` artifacts
+3. 確認 `.vscode/openspec/specs/{module}/` 中是否已有對應規格（見 `.vscode/openspec/specs/INDEX.md`）；若有，讀取後才動手實作
+
+若任務屬於**bug 修復**或**陷阱修補**，跳過 Step 0，直接從 Step 1 開始。
+
+#### Step 1 — 知識庫預讀（4 層階梯）
 
 1. 讀 [agent/INDEX.md](knowledge/agent/INDEX.md)，確認 preflight / failure record / retry rule
 2. 執行 `node .vscode/knowledge/scripts/kb.mjs start-check --module=<Module> --file=path.ext --query="keyword"`（若參數不明，不得執行 placeholder）
 3. 讀 [INDEX.md](knowledge/INDEX.md)（< 80 行）
 4. 依任務讀 `modules/{m}/quickref.md`（< 150 行）
 5. 讀 [traps/topics/INDEX.md](knowledge/traps/topics/INDEX.md)（主題目錄，掌握「這類問題以前發生過幾次」）
-6. 命中相關主題 → 讀 `traps/topics/{slug}.md`（含相關 trap 表 + 防呆原則）
+6. 命中相關主題 → 讀 `traps/topics/{slug}.md`（含相關 trap 表 + 防呆原則）；若防呆原則含 OpenSpec 連結，讀取該 spec.md
 7. 必要時讀 `traps/trap-NNN.md`（細節）
 
 替代/補充查詢：
@@ -73,7 +85,7 @@
 - 重複失敗檢查：`node .vscode/knowledge/scripts/kb.mjs repair-status`、`node .vscode/knowledge/scripts/kb.mjs repair-health`
 - 其他 facet：`by-{module,tag,topic,symptom}.json`
 
-向用戶回報：涉及模組、命中主題（topic slug）、命中陷阱編號、操作守門摘要、待探索範圍。
+向用戶回報：涉及模組、命中主題（topic slug）、命中陷阱編號、待探索範圍。
 
 ### Agent 操作錯誤閉環
 
@@ -107,7 +119,14 @@
     node .vscode/knowledge/scripts/kb.mjs repair-health
 
   若有 unresolved repeated failure，必須新增/更新 operational trap 或標註 false positive。
-7. **重建索引並體檢**：
+7. **OpenSpec change 收尾**（若本任務有建立 OpenSpec change）：
+
+   a. 確認所有 tasks 均已 completed（`.\.opsx status --change {name}`）
+   b. 執行 `/opsx:archive` 封存 change（archive 後必須接著執行 rebuild）
+
+   > 若任務僅為 bug 修復（無 OpenSpec change），跳過此步驟。
+
+8. **重建索引並體檢**：
 
        node .vscode/knowledge/scripts/kb.mjs rebuild
      node .vscode/knowledge/scripts/kb.mjs finish-check
@@ -115,7 +134,7 @@
   `rebuild` 會自動：重建 `index.jsonl` + facet JSON + `topics/{slug}.md` AUTO 區 + `fts.db`。
   `finish-check` 必須 0 errors 才算結束。
 
-8. **輸出 commit 訊息**（見下方「Commit 訊息格式」），此為任務最後一步。
+9. **輸出 commit 訊息**（見下方「Commit 訊息格式」），此為任務最後一步。
 
 > Token 不足時仍需最後提供 commit 訊息；若知識庫或驗證未完成，必須明確列為未完成事項。
 
@@ -180,6 +199,19 @@ type 選項：`feat` / `fix` / `hotfix` / `refactor` / `chore` / `docs`
 3. 禁止手動編輯 `traps/index.jsonl`、`by-*.json`、`topics/{slug}.md` 的 AUTO 區、`fts.db`（會被 rebuild 覆寫）
 4. 新增 trap 必須走 `kb.mjs new-trap`（自動取下一個 id，避免衝突；自動校驗 topics 白名單）
 5. 禁止使用未登記於 `topics-taxonomy.yml` 的 topic slug
+6. 禁止 `/opsx:archive` 後未執行 `kb.mjs rebuild`（topics 防呆原則中的 spec 連結無法被 FTS 索引）
+7. 禁止直接修改 `.vscode/openspec/specs/` 而不更新 `specs/INDEX.md`（Requirements 數量失同步）
+
+---
+
+### OpenSpec 與知識庫分工
+
+| 維度 | OpenSpec（`.vscode/openspec/`）| 知識庫（`.vscode/knowledge/`）|
+|------|----------------------|-------------------------------|
+| **回答問題** | WHAT（行為契約、需求規格）| WHY/HOW-NOT-TO（根因、修正歷程）|
+| **觸發時機** | 新功能 / 規格變更 | 踩坑、bug 修復 |
+| **入口指令** | `/opsx:propose`、`/opsx:explore` | `kb.mjs new-trap` |
+| **結束動作** | `/opsx:archive` → `kb.mjs rebuild` | `kb.mjs rebuild` |
 
 ---
 
