@@ -25,6 +25,9 @@
 .PARAMETER SkipRebuild
     Skip kb.mjs rebuild and finish-check.
 
+.PARAMETER SkipOpenSpec
+    Skip OpenSpec scaffold, opsx wrapper, and prompt injection steps.
+
 .PARAMETER NoReloadPrompt
     Suppress the VS Code reload reminder.
 #>
@@ -36,6 +39,7 @@ param(
     [bool]$Backup = $true,
     [switch]$ForceTemplates,
     [switch]$SkipRebuild,
+    [switch]$SkipOpenSpec,
     [switch]$NoReloadPrompt
 )
 
@@ -247,6 +251,190 @@ function Ensure-TaxonomyTopic {
     Save-TextFile -Path $TaxonomyPath -Content ($text.TrimEnd() + $block + "`n") -Reason "Add taxonomy topic $Slug"
 }
 
+# ---------------------------------------------------------------------------
+# Append-Or-Replace-MarkedBlock
+# Replaces content between START/END markers in a file, or appends if absent.
+# All OpenSpec injections use <!-- OPENSPEC v3.2 START --> / END markers so
+# future upgrades can replace only the marked block, not the whole file.
+# ---------------------------------------------------------------------------
+function Append-Or-Replace-MarkedBlock {
+    param([string]$Path, [string]$StartMarker, [string]$EndMarker, [string]$NewBlock, [string]$Reason)
+    $replacement = $StartMarker + "`n" + $NewBlock.Trim() + "`n" + $EndMarker
+    if (-not (Test-Path $Path)) {
+        Ensure-File -Path $Path -Content ($replacement + "`n") -Reason $Reason
+        return
+    }
+    $text = Read-Utf8File $Path
+    $startIdx = $text.IndexOf($StartMarker)
+    if ($startIdx -ge 0) {
+        $endIdx = $text.IndexOf($EndMarker, $startIdx)
+        if ($endIdx -ge 0) {
+            $before  = $text.Substring(0, $startIdx)
+            $after   = $text.Substring($endIdx + $EndMarker.Length)
+            $newText = $before + $replacement + $after
+            if ($newText -ne $text) {
+                Save-TextFile -Path $Path -Content $newText -Reason "$Reason (replace existing block)"
+            } else {
+                Write-Host "  [SKIP]  $Reason block unchanged" -ForegroundColor DarkYellow
+            }
+            return
+        }
+    }
+    # Markers not found — append
+    $appended = $text.TrimEnd() + "`n`n" + $replacement + "`n"
+    Save-TextFile -Path $Path -Content $appended -Reason "$Reason (append new block)"
+}
+
+# ---------------------------------------------------------------------------
+# Ensure-OpenSpecScaffold
+# Creates .vscode/openspec/ directory structure if not present.
+# Existing files are never overwritten.
+# ---------------------------------------------------------------------------
+function Ensure-OpenSpecScaffold {
+    $openspecDir = Join-Path $VscodeDir 'openspec'
+    $changesDir  = Join-Path $openspecDir 'changes'
+    $archiveDir  = Join-Path $changesDir  'archive'
+    $schemasDir  = Join-Path $openspecDir 'schemas'
+    $specsDir    = Join-Path $openspecDir 'specs'
+
+    Ensure-Directory -Path $changesDir -Reason 'Create openspec/changes'
+    Ensure-Directory -Path $archiveDir -Reason 'Create openspec/changes/archive'
+    Ensure-Directory -Path $schemasDir -Reason 'Create openspec/schemas'
+    Ensure-Directory -Path $specsDir   -Reason 'Create openspec/specs'
+
+    Ensure-File -Path (Join-Path $changesDir '.gitkeep')         -Content '' -Reason 'Create openspec/changes/.gitkeep'
+    Ensure-File -Path (Join-Path $archiveDir '.gitkeep')         -Content '' -Reason 'Create openspec/changes/archive/.gitkeep'
+
+    $specsIndex = @'
+OpenSpec Requirements Index
+
+> Update requirement counts per module after each change is archived.
+
+| Module | Requirements | Last Updated | Notes |
+|--------|-------------|--------------|-------|
+'@
+    Ensure-File -Path (Join-Path $specsDir 'INDEX.md') -Content $specsIndex -Reason 'Create openspec/specs/INDEX.md'
+
+    $openspecConfig = @'
+schema: project-feature
+
+context: |
+  # Project name (fill in)
+
+  ## Tech stack
+  (fill in: language, framework, database, test framework)
+
+  ## Code paths
+  (fill in: main code directory structure)
+
+  ## KB CLI
+  - node .vscode/knowledge/scripts/kb.mjs start-check --module=X --file=path --query="keyword"
+  - node .vscode/knowledge/scripts/kb.mjs new-trap --module=X --title="..." --topics=slug
+  - node .vscode/knowledge/scripts/kb.mjs rebuild
+
+  ## Forbidden
+  - Do not use fenced code blocks in responses (VS Code Chat hides them)
+  - Do not use PowerShell Set-Content to write knowledge files (CP950 corruption)
+  - Do not manually edit traps/index.jsonl, by-*.json, or topics AUTO sections
+
+rules:
+  research:
+    - Run kb.mjs start-check and record matching traps and topics
+    - List ambiguities in an Assumptions block; confirm before implementing
+  proposal:
+    - Produce tasks with explicit verification steps
+  tasks:
+    - Each task must have a verification step
+'@
+    Ensure-File -Path (Join-Path $openspecDir 'config.yaml') -Content $openspecConfig -Reason 'Create openspec/config.yaml'
+}
+
+# ---------------------------------------------------------------------------
+# Ensure-OpsxWrappers
+# Creates opsx.bat / opsx.ps1 in project root if not present.
+# ---------------------------------------------------------------------------
+function Ensure-OpsxWrappers {
+    $opsxBat = @'
+@echo off
+pushd "%~dp0.vscode"
+openspec %*
+set _EC=%ERRORLEVEL%
+popd
+exit /b %_EC%
+'@
+    $opsxPs1 = @'
+param([Parameter(ValueFromRemainingArguments=$true)]$passThrough)
+Push-Location (Join-Path $PSScriptRoot ".vscode")
+openspec @passThrough
+$ec = $LASTEXITCODE
+Pop-Location
+exit $ec
+'@
+    Ensure-File -Path (Join-Path $ProjectRootFull 'opsx.bat') -Content $opsxBat -Reason 'Create opsx.bat wrapper'
+    Ensure-File -Path (Join-Path $ProjectRootFull 'opsx.ps1') -Content $opsxPs1 -Reason 'Create opsx.ps1 wrapper'
+}
+
+# ---------------------------------------------------------------------------
+# Ensure-GitignoreEntries
+# Appends .vscode/, /opsx.bat, /opsx.ps1 to .gitignore if not already present.
+# ---------------------------------------------------------------------------
+function Ensure-GitignoreEntries {
+    $gitignorePath = Join-Path $ProjectRootFull '.gitignore'
+    $entries = @(
+        @{ Needle = '.vscode/';  Line = '.vscode/' },
+        @{ Needle = '/opsx.bat'; Line = '/opsx.bat' },
+        @{ Needle = '/opsx.ps1'; Line = '/opsx.ps1' }
+    )
+    foreach ($e in $entries) {
+        Append-BlockIfMissing -Path $gitignorePath -Needle $e.Needle -Block $e.Line -Reason "Add $($e.Line) to .gitignore"
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Ensure-OpenSpecCheatsheet
+# Creates openspec-cheatsheet.md in project root if not present.
+# ---------------------------------------------------------------------------
+function Ensure-OpenSpecCheatsheet {
+    $cheatsheetPath = Join-Path $ProjectRootFull 'openspec-cheatsheet.md'
+    $content = @'
+# OpenSpec Quick Reference
+
+> Root: `.vscode/openspec/`
+> Wrappers: `opsx.bat` (CMD) / `opsx.ps1` (PowerShell) -- project root, not versioned
+
+## Common commands
+
+    .\opsx list                         # list all changes
+    .\opsx new change <name>            # create new change
+    .\opsx status --change <name>       # check task completion
+    .\opsx archive --change <name>      # archive completed change
+
+## VS Code prompt flow
+
+    #start-plan   -> OpenSpec pre-read + KB read + plan output
+    /opsx:propose -> create change artifacts  (after user confirms plan)
+    #start-task   -> KB read + implement tasks
+    #end-task     -> KB update + /opsx:archive + rebuild + finish-check
+
+## Dual-track responsibility
+
+| OpenSpec (.vscode/openspec/)     | Knowledge Base (.vscode/knowledge/)      |
+|----------------------------------|------------------------------------------|
+| WHAT: behaviour contracts, specs | WHY/HOW-NOT-TO: root causes, traps       |
+| New features / spec changes      | Bug fixes, trap records                  |
+| /opsx:propose, /opsx:explore     | kb.mjs new-trap                          |
+| /opsx:archive -> rebuild         | rebuild                                  |
+
+## Key files
+
+- `.vscode/openspec/config.yaml`     -- project context and rules (fill in)
+- `.vscode/openspec/specs/INDEX.md`  -- requirement counts per module
+- `.vscode/openspec/changes/<name>/` -- change artifacts (working)
+- `.vscode/openspec/changes/archive/<name>/` -- archived changes
+'@
+    Ensure-File -Path $cheatsheetPath -Content $content -Reason 'Create openspec-cheatsheet.md'
+}
+
 $ProjectRootFull = [System.IO.Path]::GetFullPath($ProjectRoot)
 $VscodeDir = Join-Path $ProjectRootFull '.vscode'
 $KbDir = Join-Path $VscodeDir 'knowledge'
@@ -258,12 +446,14 @@ $script:BackedUp = @{}
 
 Write-Host ''
 Write-Host '========================================================' -ForegroundColor Cyan
-Write-Host '   VS Code local AI knowledge base v3.1 updater' -ForegroundColor Cyan
+Write-Host '   VS Code local AI knowledge base v3.2 updater' -ForegroundColor Cyan
+Write-Host '   (v3.2: Knowledge Base + OpenSpec dual-track)' -ForegroundColor Cyan
 Write-Host '========================================================' -ForegroundColor Cyan
 Write-Host ''
 Write-Host "Project root : $ProjectRootFull"
 Write-Host "Knowledge dir: $KbDir"
 Write-Host "Mode         : $(if ($Apply) { 'Apply' } else { 'Dry-run' })"
+if ($SkipOpenSpec) { Write-Host '  [mode]  -SkipOpenSpec: skipping OpenSpec scaffold and prompt injection' -ForegroundColor Magenta }
 Write-Host ''
 
 if (-not (Test-Path $ProjectRootFull)) { throw "ProjectRoot does not exist: $ProjectRootFull" }
@@ -362,8 +552,8 @@ if (-not $templateKbMjs) {
     } elseif ($ForceTemplates) {
         Save-TextFile -Path $kbMjsPath -Content $templateKbMjs -Reason 'Replace scripts/kb.mjs with v3.1 template'
     } else {
-        $candidate = Join-Path $ScriptDir 'kb.mjs.v3.1.candidate'
-        Save-TextFile -Path $candidate -Content $templateKbMjs -Reason 'Create scripts/kb.mjs.v3.1.candidate without replacing kb.mjs'
+        $candidate = Join-Path $ScriptDir 'kb.mjs.v3.2.candidate'
+        Save-TextFile -Path $candidate -Content $templateKbMjs -Reason 'Create scripts/kb.mjs.v3.2.candidate without replacing kb.mjs'
         Write-Host '  [INFO]  Re-run with -Apply -ForceTemplates to replace kb.mjs after review.' -ForegroundColor Gray
     }
 }
@@ -372,14 +562,128 @@ Write-Section '6. Version marker'
 $versionJson = @"
 {
   "schema": "local-ai-knowledge-base",
-  "version": "3.1",
+  "version": "3.2",
   "updated_at": "$(Get-Date -Format o)",
-  "features": ["agent-guard", "repair-closure", "finish-check"]
+  "features": ["agent-guard", "repair-closure", "finish-check", "openspec-dual-track"]
 }
 "@
 Save-TextFile -Path (Join-Path $KbDir '.kb-version.json') -Content $versionJson -Reason 'Write .kb-version.json'
 
-Write-Section '7. rebuild / finish-check'
+Write-Section '7. OpenSpec dual-track upgrade'
+if ($SkipOpenSpec) {
+    Write-Host '  [SKIP]  -SkipOpenSpec specified; skipping all OpenSpec steps' -ForegroundColor DarkYellow
+} else {
+    # 7a. Scaffold
+    Ensure-OpenSpecScaffold
+
+    # 7b. opsx wrappers
+    Ensure-OpsxWrappers
+
+    # 7c. .gitignore entries
+    Ensure-GitignoreEntries
+
+    # 7d. Cheatsheet
+    Ensure-OpenSpecCheatsheet
+
+    # 7e. Inject OpenSpec block into copilot-instructions.md
+    $copilotInstructionsPath = Join-Path $VscodeDir 'copilot-instructions.md'
+    $openspecCopilotBlock = @'
+### Task startup: OpenSpec + KB dual-track (Step 0)
+
+If the task involves new features, spec changes, or behaviour contract adjustments:
+1. Use `/opsx:explore` to clarify requirement boundaries with the user
+2. Use `/opsx:propose` to create an OpenSpec change (`.vscode/openspec/changes/{name}/` artifacts)
+3. Check `.vscode/openspec/specs/INDEX.md` for existing specs; if found, read before implementing
+
+If the task is a bug fix or trap patch, skip Step 0 and go directly to the KB read (Step 1).
+
+### Task end: OpenSpec archive closure
+
+If this task created an OpenSpec change:
+a. Confirm all tasks completed: `.\opsx status --change {name}`
+b. Run `/opsx:archive`; immediately follow with `kb.mjs rebuild`
+   (so spec links in topic guard rules are FTS-indexed)
+If bug fix only (no OpenSpec change), skip.
+
+### OpenSpec vs KB responsibility
+
+| Dimension | OpenSpec (`.vscode/openspec/`) | KB (`.vscode/knowledge/`) |
+|-----------|-------------------------------|---------------------------|
+| Answers | WHAT: behaviour contracts | WHY/HOW-NOT-TO: root causes, traps |
+| Trigger | New features / spec changes | Bug fixes, trap records |
+| Entry | `/opsx:propose`, `/opsx:explore` | `kb.mjs new-trap` |
+| End action | `/opsx:archive` then rebuild | rebuild |
+
+Forbidden:
+- Do not run `kb.mjs rebuild` without first running `/opsx:archive` when a change exists
+- Do not modify `.vscode/openspec/specs/` without updating `specs/INDEX.md`
+'@
+    Append-Or-Replace-MarkedBlock `
+        -Path $copilotInstructionsPath `
+        -StartMarker '<!-- OPENSPEC v3.2 START -->' `
+        -EndMarker   '<!-- OPENSPEC v3.2 END -->' `
+        -NewBlock    $openspecCopilotBlock `
+        -Reason      'Inject OpenSpec dual-track block into copilot-instructions'
+
+    # 7f. Inject OpenSpec pre-read block into start-task.prompt.md
+    $startTaskPath = Join-Path $VscodeDir 'start-task.prompt.md'
+    $openspecStartTaskBlock = @'
+## OpenSpec pre-read (new features / spec changes only)
+
+If the task involves new features, spec changes, or behaviour contract adjustments:
+1. Check [openspec/specs/INDEX.md](openspec/specs/INDEX.md) for existing specs; read before KB read
+2. Use `/opsx:explore` to clarify requirement boundaries
+3. Use `/opsx:propose` to create an OpenSpec change
+
+> Bug fix / trap patch: skip this block and go directly to the startup steps.
+'@
+    Append-Or-Replace-MarkedBlock `
+        -Path $startTaskPath `
+        -StartMarker '<!-- OPENSPEC v3.2 START -->' `
+        -EndMarker   '<!-- OPENSPEC v3.2 END -->' `
+        -NewBlock    $openspecStartTaskBlock `
+        -Reason      'Inject OpenSpec pre-read block into start-task'
+
+    # 7g. Inject OpenSpec pre-read block into start-plan.prompt.md
+    $startPlanPath = Join-Path $VscodeDir 'start-plan.prompt.md'
+    $openspecStartPlanBlock = @'
+## OpenSpec pre-read (new features / spec changes only)
+
+If the task involves new features, spec changes, or behaviour contract adjustments:
+1. Check [openspec/specs/INDEX.md](openspec/specs/INDEX.md) for existing specs; read before outputting plan
+2. Use `/opsx:explore` to clarify requirement boundaries
+3. Use `/opsx:propose` to create an OpenSpec change (trigger AFTER user confirms the plan)
+
+> Bug fix / trap patch: skip this block and go directly to Step 1.
+'@
+    Append-Or-Replace-MarkedBlock `
+        -Path $startPlanPath `
+        -StartMarker '<!-- OPENSPEC v3.2 START -->' `
+        -EndMarker   '<!-- OPENSPEC v3.2 END -->' `
+        -NewBlock    $openspecStartPlanBlock `
+        -Reason      'Inject OpenSpec pre-read block into start-plan'
+
+    # 7h. Inject OpenSpec archive step into end-task.prompt.md
+    $endTaskPath = Join-Path $VscodeDir 'end-task.prompt.md'
+    $openspecEndTaskBlock = @'
+## OpenSpec archive closure (new features / spec changes only)
+
+If this task created an OpenSpec change:
+a. Confirm all tasks completed: `.\opsx status --change <change-name>`
+b. Run `/opsx:archive` to archive the change
+c. Immediately run `kb.mjs rebuild` so spec links are FTS-indexed
+
+> Pure bug fix (no OpenSpec change): skip this block.
+'@
+    Append-Or-Replace-MarkedBlock `
+        -Path $endTaskPath `
+        -StartMarker '<!-- OPENSPEC v3.2 START -->' `
+        -EndMarker   '<!-- OPENSPEC v3.2 END -->' `
+        -NewBlock    $openspecEndTaskBlock `
+        -Reason      'Inject OpenSpec archive step into end-task'
+}
+
+Write-Section '8. rebuild / finish-check'
 if ($SkipRebuild) {
     Write-Host '  [SKIP]  -SkipRebuild specified' -ForegroundColor DarkYellow
 } elseif (-not $Apply) {
