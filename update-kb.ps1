@@ -547,7 +547,7 @@ if (-not $templateKbMjs) {
     Save-TextFile -Path $kbMjsPath -Content $templateKbMjs -Reason 'Create scripts/kb.mjs v3.1'
 } else {
     $currentKb = Read-Utf8File $kbMjsPath
-    if ($currentKb -match 'repair-preflight' -and $currentKb -match 'finish-check') {
+    if ($currentKb -match 'async function cmdFinishCheck' -and $currentKb -match 'cmdRepairPreflight') {
         Write-Host '  [SKIP]  kb.mjs already has repair-* and finish-check' -ForegroundColor DarkYellow
     } elseif ($ForceTemplates) {
         Save-TextFile -Path $kbMjsPath -Content $templateKbMjs -Reason 'Replace scripts/kb.mjs with v3.1 template'
