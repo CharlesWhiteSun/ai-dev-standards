@@ -2,8 +2,9 @@
 
 透過一鍵 PowerShell 腳本，在任何專案中建立**可隨知識量擴張的結構化 AI 協作知識庫**，讓 GitHub Copilot Chat 在每次對話中都能高效率地讀取歷史踩坑、遵守統一規範，並在任務結束時自動歸檔新陷阱。
 
-> **v3.1（目前版本）**：**4 層階梯 + facets + topics + SQLite FTS5 全文檢索 + Agent Guard / repair closure**
-> **v3.2（規劃中）**：v3.1 基礎上加入 **OpenSpec 雙軌流程**（行為規格 + 知識庫 + Prompt 工作流程）
+> **v3.2（目前版本）**：**4 層階梯 + facets + topics + SQLite FTS5 全文檢索 + Agent Guard / repair closure + OpenSpec 雙軌流程**
+> **v3.2.1（本版新增）**：加入 **RTK terminal 輸出壓縮選配提示**（opt-in，不安裝、不強制、不取代 KB / OpenSpec）
+> **v3.3（後續規劃）**：RTK doctor / 本機成效摘要 / RTK tee 與 repair closure 橋接
 
 ---
 
@@ -16,6 +17,7 @@
 - [快速開始](#快速開始)
 - [既有知識庫升級](#既有知識庫升級)
 - [opsx.bat / opsx.ps1](#opsxbat--opsxps1)
+- [RTK 選配整合](#rtk-選配整合)
 - [Copilot Chat 指令](#copilot-chat-指令)
 - [kb.mjs CLI 指令](#kbmjs-cli-指令)
 - [腳本參數](#腳本參數)
@@ -140,8 +142,10 @@ v3.2 採**漸進式、非破壞**設計，v3.1 功能完全保留：
 | **Phase 2**（✅） | Prompt 模板整合 OpenSpec 雙軌流程 | `init-kb.ps1` 三個 prompt template |
 | **Phase 3**（✅） | `update-kb.ps1` 補 OpenSpec 升級能力 | `update-kb.ps1` |
 | **Phase 4**（✅） | `kb.mjs finish-check` 補 OpenSpec 靜態驗證 | `kb.mjs` template |
-| **Phase 5**（🔄 目前） | README 使用者心智模型更新 | `README.md` |
-| Phase 6 | 端對端驗證與回歸 | 測試矩陣 |
+| **Phase 5**（✅） | README 使用者心智模型更新 | `README.md` |
+| **Phase 6**（✅） | RTK terminal hints 選配整合 | `init-kb.ps1`、`update-kb.ps1`、`README.md`、`rtk-cheatsheet.md` |
+| Phase 7 | 端對端驗證與回歸 | 測試矩陣 |
+| Phase 8 | RTK doctor / 本機成效摘要 / tee 橋接 | `kb.mjs` 後續升版 |
 
 > **`-SkipOpenSpec` 參數**（Phase 1 加入）：讓不需要 OpenSpec 的小型專案略過 scaffold，保持純 v3.1 KB 行為。
 
@@ -159,6 +163,7 @@ v3.2 採**漸進式、非破壞**設計，v3.1 功能完全保留：
 | **Agent Guard** | 任務開始先讀 `agent/INDEX.md`，執行前用 `repair-preflight` 阻擋 placeholder、錯誤 shell 與已知重複坑 |
 | **Repair closure** | 工具/命令失敗後用 `repair-record` 記錄 sanitized fingerprint；同一錯誤重複會被 `repair-health` 擋下 |
 | **Finish gate** | `finish-check` 整合 taxonomy、health、repair-health，確保任務結束前可回歸檢查 |
+| **RTK terminal hints（選配）** | 使用 `-EnableRtkHints` 才產生 RTK 指引；RTK 只壓縮 terminal 輸出，不取代 KB / OpenSpec，未安裝時自動回退原命令 |
 | **編碼安全** | 全程 UTF-8 without BOM；`kb.mjs health` 自動檢測 BOM / U+FFFD / quickref 行數 |
 | **Topic 防呆原則手動保留** | `topics/{slug}.md` 用 `<!-- AUTO_BEGIN/END -->` 分隔，AUTO 區自動覆寫，防呆原則段落手動維護不會被洗掉 |
 | **本機隔離** | 全部存於 `.vscode/`，建議加 `.gitignore`，不影響其他協作者 |
@@ -170,9 +175,12 @@ v3.2 採**漸進式、非破壞**設計，v3.1 功能完全保留：
 ```
 專案根目錄/
 ├── init-kb.ps1                          ← 新專案初始化腳本
-├── update-kb.ps1                        ← 既有知識庫非破壞性升級腳本├── opsx.bat                             ← openspec wrapper（建議不入版控）
+├── update-kb.ps1                        ← 既有知識庫非破壞性升級腳本
+├── opsx.bat                             ← openspec wrapper（建議不入版控）
 ├── opsx.ps1                             ← openspec wrapper（建議不入版控）
-├── openspec-cheatsheet.md               ← opsx 指令速查表└── .vscode/
+├── openspec-cheatsheet.md               ← opsx 指令速查表
+├── rtk-cheatsheet.md                    ← RTK 指令速查表（僅 -EnableRtkHints 產生）
+└── .vscode/
     ├── settings.json                    ← Copilot prompt 路徑設定
     ├── copilot-instructions.md          ← 單一規範來源（SSOT）
     ├── start-task.prompt.md             ← /start-task：4 層階梯讀取
@@ -263,9 +271,16 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 .\init-kb.ps1
 ```
 
+若要同時產生 RTK terminal 輸出壓縮提示（選配，不安裝 RTK、不強制使用）：
+
+```powershell
+.\init-kb.ps1 -EnableRtkHints
+```
+
 腳本會自動：
 
 - 建立 `.vscode/` 結構與所有規範檔
+- 若有 `-EnableRtkHints`，額外建立 `rtk-cheatsheet.md`，並把 RTK 條件式使用規則寫入 Copilot prompts
 - 執行 `node kb.mjs rebuild` 初始化索引
 - 執行 `node kb.mjs finish-check` 確認 taxonomy / health / repair-health 狀態
 - 詢問是否重新載入 VSCode 視窗
@@ -297,7 +312,16 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 .\update-kb.ps1 -ProjectRoot D:\www\your-project -Apply
 ```
 
-若既有 `kb.mjs` 太舊，dry-run/apply 會產生 `scripts/kb.mjs.v3.1.candidate`，不覆蓋原檔。確認可接受模板替換後再執行：
+若要替既有專案加入 RTK 選配提示，先 dry-run 檢查，再套用：
+
+```powershell
+.\update-kb.ps1 -ProjectRoot D:\www\your-project -EnableRtkHints
+.\update-kb.ps1 -ProjectRoot D:\www\your-project -Apply -EnableRtkHints
+```
+
+`-EnableRtkHints` 只新增/更新 RTK 文件與 prompt 標記區塊；不安裝 RTK、不修改全域 shell hook，也不會讓 `rtk` 變成必要相依。若本機找不到 `rtk`，升級腳本只會提示 fallback，任務流程照常使用原命令。
+
+若既有 `kb.mjs` 太舊，dry-run/apply 會產生 `scripts/kb.mjs.v3.2.candidate`，不覆蓋原檔。確認可接受模板替換後再執行：
 
 ```powershell
 .\update-kb.ps1 -ProjectRoot D:\www\your-project -Apply -ForceTemplates
@@ -331,6 +355,86 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 3. **自動加 `.gitignore`**：`update-kb.ps1` 的 Section 7 會自動把 `opsx.bat` / `opsx.ps1` 加入 `.gitignore`
 
 若團隊統一採用 OpenSpec 工作流程，可從 `.gitignore` 移除相關條目改為入版控。
+
+---
+
+## RTK 選配整合
+
+RTK（Rust Token Killer）是 terminal / shell 輸出壓縮工具，適合把 `git`、搜尋、測試、build、lint、log、JSON 等高輸出命令整理成 AI 更容易讀取的摘要。此專案只把 RTK 當成**可選的 terminal 輸出壓縮層**：它不管理 OpenSpec、不管理 trap、不重建 facet / FTS5，也不取代 Agent Guard / repair closure。
+
+### 是否適合目前架構？
+
+適合，但只放在工具層：
+
+| 面向 | 結論 |
+|------|------|
+| Knowledge Base | RTK 可降低 `kb.mjs` 周邊搜尋、測試、git diff 的輸出成本，但不取代 `.vscode/knowledge/` 的資料模型 |
+| OpenSpec | RTK 可壓縮 `opsx` 或 git 相關輸出，但不產生 change artifacts，也不維護行為契約 |
+| Agent Guard | RTK 失敗仍需走 `repair-record` / `repair-status`；不得把 raw output 或秘密寫入 runtime ledger |
+| Windows | Native Windows 需用顯式 `rtk ...` 命令；WSL 才適合完整 hook / auto-rewrite |
+| 風險控制 | 未安裝 RTK 時必須 fallback 原命令，不得阻擋任務完成 |
+
+### 啟用方式
+
+新專案初始化時啟用：
+
+    .\init-kb.ps1 -EnableRtkHints
+
+既有專案升級時啟用：
+
+    .\update-kb.ps1 -ProjectRoot D:\www\your-project -EnableRtkHints
+    .\update-kb.ps1 -ProjectRoot D:\www\your-project -Apply -EnableRtkHints
+
+啟用後會產生或更新：
+
+| 位置 | 說明 |
+|------|------|
+| `rtk-cheatsheet.md` | RTK 使用速查、Windows / WSL 差異、fallback 與保密規則；已存在時保留既有檔案 |
+| `.vscode/copilot-instructions.md` | RTK 只作為選配 terminal 壓縮層的專案規範 |
+| `.vscode/start-task.prompt.md` | 任務中高輸出 terminal 命令可優先用 RTK，但須可 fallback |
+| `.vscode/start-plan.prompt.md` | 規劃階段只讀檢查時可用 RTK 壓縮搜尋 / git 輸出 |
+| `.vscode/end-task.prompt.md` | `rtk gain` 僅作本機觀察，不是 finish gate |
+| `.vscode/knowledge/.kb-version.json` | `update-kb.ps1 -EnableRtkHints` 會加入 `rtk-terminal-hints` feature marker |
+
+### 安裝狀態檢查
+
+PowerShell：
+
+    Get-Command rtk -ErrorAction SilentlyContinue
+    rtk --version
+
+若找不到 RTK，不需要中止；直接使用原命令。
+
+### Native Windows 使用方式
+
+Native Windows 的 RTK filters 可用，但 auto-rewrite hook 有限制，建議明確加上 `rtk` 前綴：
+
+    rtk git status
+    rtk git diff
+    rtk git log -n 10
+    rtk grep "keyword" .
+    rtk find "*.php" .
+    rtk test npm test
+    rtk err npm run build
+
+若 RTK 輸出不足以判斷問題，改用原命令或 RTK verbose 取得完整上下文。若 RTK 命令失敗，先用 `repair-record` 記錄 sanitized failure，再決定 fallback 或改方法。
+
+### WSL 使用方式
+
+WSL 才適合 RTK 的完整 hook / auto-rewrite 流程。若團隊主要在 Windows PowerShell 執行，文件與 prompt 不應假設 hook 已啟用；仍以顯式 `rtk ...` 與原命令 fallback 為主。
+
+### 隱私與 telemetry
+
+RTK telemetry 是外部工具的 opt-in 功能。本專案不自動啟用 telemetry，不代替使用者同意，也不把 telemetry 或 `rtk gain` 當成任務完成條件。若未來要保存本機 RTK 成效，僅能保存 aggregate 摘要，例如總命令數、估計節省 token、工具類別分布；不得保存命令參數、檔名、secrets 或 raw stdout。
+
+### 後續升版計劃
+
+| 階段 | 內容 | 原則 |
+|------|------|------|
+| v3.2.1 | `-EnableRtkHints`、prompt 條件式規則、`rtk-cheatsheet.md` | 已實作；完全 opt-in |
+| v3.3 | `kb.mjs rtk-check` doctor 指令 | 只讀檢查 RTK 狀態、Windows / WSL 模式、`rtk gain` 摘要 |
+| v3.4 | RTK tee 與 repair closure 橋接 | 只讀取摘要；`repair-record` 仍只存 sanitized fingerprint |
+| v3.5 | 本機 aggregate 成效摘要 | 不接外部 telemetry，不保存命令參數、檔名或秘密 |
 
 ---
 
@@ -393,7 +497,7 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 初始化新專案：
 
 ```powershell
-.\init-kb.ps1 [-Force]
+.\init-kb.ps1 [-Force] [-SkipOpenSpec] [-EnableRtkHints]
 ```
 
 | 參數 | 說明 |
@@ -401,11 +505,12 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 | （無參數） | 預設執行；已存在的知識庫檔案**不覆蓋**，`settings.json` 永遠不覆蓋 |
 | `-Force` | 強制覆蓋初始化模板檔（`settings.json` 仍不覆蓋）；不建議當成既有知識庫升級方式 |
 | `-SkipOpenSpec` | 略過 OpenSpec scaffold（不產生 `openspec/`、`opsx.bat`、`opsx.ps1`、`openspec-cheatsheet.md`）；適合純 KB 小型專案 |
+| `-EnableRtkHints` | 產生 RTK 選配提示與 `rtk-cheatsheet.md`；不安裝 RTK、不修改全域 hook、未安裝時使用原命令 fallback |
 
 升級既有知識庫：
 
 ```powershell
-.\update-kb.ps1 [-ProjectRoot <path>] [-Apply] [-Backup:$false] [-ForceTemplates] [-SkipRebuild] [-NoReloadPrompt]
+.\update-kb.ps1 [-ProjectRoot <path>] [-Apply] [-Backup:$false] [-ForceTemplates] [-SkipRebuild] [-SkipOpenSpec] [-EnableRtkHints] [-NoReloadPrompt]
 ```
 
 | 參數 | 說明 |
@@ -417,6 +522,7 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 | `-ForceTemplates` | 允許覆蓋 `kb.mjs` 等可執行模板；未指定時只產生 candidate |
 | `-SkipRebuild` | 跳過 `rebuild` / `finish-check` |
 | `-SkipOpenSpec` | 略過 OpenSpec 升級（Section 7）；保留純 v3.1 KB 行為 |
+| `-EnableRtkHints` | 以 marker block 非破壞注入 RTK 選配提示，並建立 `rtk-cheatsheet.md`；RTK 不存在時只提示 fallback |
 | `-NoReloadPrompt` | 不輸出 VS Code Reload Window 提示 |
 
 ---
@@ -443,6 +549,10 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 
 靜態 health 只能檢查檔案是否一致，不能防止 Agent 反覆做同一個錯誤操作。v3.1 會把工具/命令失敗轉成 sanitized fingerprint，`repair-health` 在同一錯誤重複時擋下收尾，迫使 Agent 改方法，或把新陷阱升級成 operational trap。runtime ledger 只保存摘要與 hash，禁止保存 `.env`、token、密碼、完整 API key 或大段 stdout。
 
+### 為什麼 RTK 是選配而不是核心相依？
+
+RTK 解決的是「terminal 輸出太長」的問題，不解決「規格如何保存」「陷阱如何索引」「Agent 如何避免重複錯誤」。因此 RTK 放在工具層，只有使用者明確帶 `-EnableRtkHints` 時才產生提示；未安裝 RTK 時流程必須回退原命令並照常完成。這讓高輸出任務能省 token，同時不破壞 Windows / PowerShell 使用者的既有流程。
+
 ### 本機隔離，不干擾協作
 
 知識庫存於 `.vscode/`，建議加入 `.gitignore`。每位開發者維護自己的本機 AI 知識庫，不強制所有協作者都使用相同的 AI 工作流程。
@@ -463,6 +573,7 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 | PowerShell | 5.1 | 執行 `init-kb.ps1` |
 | Node.js | 16+ | rebuild / new-trap / facets / topics / health / finish-check / repair-* / taxonomy / audit / bulk-tag |
 | Node.js | 22.5+ | 額外啟用 `kb.mjs search` 全文檢索 |
+| RTK | 選配 | 只有使用 `-EnableRtkHints` 時才需要；用於壓縮 terminal 輸出，缺少時 fallback 原命令 |
 | VS Code + Copilot Chat | 最新 | 三個 `/` prompt 指令 |
 
 > **無 npm 依賴**：`kb.mjs` 是純 Node ESM，使用 Node 內建模組（`fs/promises`、`path`、`url`、`sqlite`）。
@@ -479,6 +590,7 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 6. **新增 trap 必須走 `kb.mjs new-trap`**：自動取下一個 id 避免衝突，自動校驗 topic 白名單。
 7. **`traps/index.jsonl` / `by-*.json` / `agent/generated/*.json` / `topics/{slug}.md` 的 AUTO 區 / `fts.db` 全部禁止手動編輯**：rebuild 會覆寫。
 8. **新主題 slug 必須先登記**：在 `topics-taxonomy.yml` 加條目後再用，否則 `taxonomy lint` 會擋。
+9. **RTK 只可選配使用**：不得因未安裝 RTK 阻擋任務；不得把 RTK tee raw output、命令參數中的秘密或大段 stdout 寫入知識庫。
 
 ---
 

@@ -41,12 +41,16 @@
 
 .PARAMETER Force
     覆蓋已存在的知識庫檔案（settings.json 永遠不覆蓋）。
+
+.PARAMETER EnableRtkHints
+    產生 RTK（Rust Token Killer）選配指引；不安裝 RTK、不修改全域 hook，且未安裝 RTK 時流程不失敗。
 #>
 
 [CmdletBinding()]
 param(
     [switch]$Force,
-    [switch]$SkipOpenSpec
+    [switch]$SkipOpenSpec,
+    [switch]$EnableRtkHints
 )
 
 Set-StrictMode -Version Latest
@@ -117,6 +121,125 @@ if ($Force) {
 if ($SkipOpenSpec) {
     Write-Host "  [模式] 跳過 OpenSpec scaffold（僅建立知識庫結構）" -ForegroundColor Magenta
 }
+if ($EnableRtkHints) {
+    Write-Host "  [模式] 啟用 RTK 選配提示（不安裝、不強制使用）" -ForegroundColor Magenta
+}
+
+$rtkCopilotBlock = @'
+---
+
+## 五、RTK terminal 輸出壓縮（選配）
+
+RTK（Rust Token Killer）只作為 terminal / shell 輸出壓縮層，用來降低 AI 讀取 `git`、搜尋、測試、build、lint、log 等高輸出命令的 token 成本。RTK 不管理 OpenSpec、trap、taxonomy、facets 或 FTS5，不能取代 `.vscode/openspec/` 與 `.vscode/knowledge/`。
+
+### 使用條件
+
+1. 先確認本機可用：`Get-Command rtk -ErrorAction SilentlyContinue` 或 `rtk --version`。
+2. 若 RTK 不存在，直接使用原命令；不得讓任務因缺少 RTK 失敗。
+3. Native Windows 的 auto-rewrite hook 不完整，請使用顯式命令，例如 `rtk git status`、`rtk grep "pattern" .`、`rtk test npm test`。
+4. WSL 可使用 RTK hook，但仍需保留原命令 fallback。
+5. VS Code / Copilot 內建的讀檔與搜尋工具不會經過 RTK；只有 shell / terminal 命令會受影響。
+
+### 建議優先使用情境
+
+- `rtk git status`、`rtk git diff`、`rtk git log -n 10`
+- `rtk grep "keyword" .`、`rtk find "*.php" .`、`rtk ls .`
+- `rtk test <測試命令>`、`rtk err <建置或 lint 命令>`
+- `rtk log path/to/log`、`rtk json file.json`
+
+### 回退與保密
+
+- 若 RTK 輸出不足以判斷問題，改用 RTK verbose 或原命令取得完整上下文。
+- 若 RTK 命令失敗，不得原樣重試；依 Agent Guard 使用 `repair-record` / `repair-status` 記錄 sanitized failure。
+- 不得把 RTK tee 的完整 raw output、`.env`、token、密碼、完整 API key 或大段 stdout 寫入知識庫。
+- RTK telemetry 是外部工具的 opt-in 功能；本專案不自動啟用、不代替使用者同意。
+'@
+
+$rtkPromptBlock = @'
+## RTK terminal hints（選配）
+
+若本機可執行 `rtk --version`，對高輸出 shell 命令可優先使用 RTK：`rtk git status`、`rtk git diff`、`rtk grep "keyword" .`、`rtk test <測試命令>`、`rtk err <lint/build 命令>`。RTK 只壓縮 terminal 輸出，不取代 KB / OpenSpec，也不影響 VS Code 內建讀檔或搜尋工具。
+
+若 RTK 不存在、輸出不足或命令失敗，立即回退原命令；失敗需依 Agent Guard 執行 `repair-record` / `repair-status`，不得把 raw output 或秘密寫入知識庫。
+'@
+
+$rtkEndTaskBlock = @'
+## RTK 收尾檢查（選配）
+
+若本任務使用過 RTK，可視需要執行 `rtk gain` 查看本機節省摘要。此資訊僅作觀察，不是 finish gate；未安裝 RTK 或 RTK 指令失敗不得阻擋任務完成。不得把 RTK tee raw output、命令參數中的秘密或大段 stdout 寫入知識庫。
+'@
+
+$rtkCheatsheet = @'
+# RTK 指令速查（選配）
+
+> RTK（Rust Token Killer）是 terminal 輸出壓縮工具，可減少 AI 讀取命令輸出的 token 成本。
+> 本專案只產生使用提示，不會安裝 RTK、不會修改全域 hook，也不會讓 RTK 成為必要相依。
+
+---
+
+## 何時使用
+
+RTK 適合輸出量大的命令：
+
+- `git status` / `git diff` / `git log`
+- `rg` / `grep` / `find` / `ls`
+- 測試、lint、build、type check
+- 大型 log、JSON、docker / kubectl 輸出
+
+RTK 不適合取代：
+
+- `.vscode/knowledge/` 的 trap、facet、FTS5 與 repair closure
+- `.vscode/openspec/` 的行為規格與 change artifacts
+- VS Code / Copilot 內建 read/search 工具
+
+---
+
+## 安裝狀態檢查
+
+PowerShell：
+
+  Get-Command rtk -ErrorAction SilentlyContinue
+  rtk --version
+
+若找不到 RTK，使用原命令即可；不要讓任務因缺少 RTK 中止。
+
+---
+
+## Native Windows 使用方式
+
+Native Windows 可顯式使用 RTK，但 auto-rewrite hook 不完整：
+
+  rtk git status
+  rtk git diff
+  rtk git log -n 10
+  rtk grep "keyword" .
+  rtk find "*.php" .
+  rtk test npm test
+  rtk err npm run build
+
+若 RTK 輸出不足，改用原命令或 RTK verbose 取得完整上下文。
+
+---
+
+## WSL 使用方式
+
+WSL 可使用 RTK 的完整 hook / auto-rewrite 流程，但仍建議保留原命令 fallback。若專案主要在 Windows PowerShell 執行，不要假設 hook 已啟用。
+
+---
+
+## 與 Agent Guard 搭配
+
+1. 執行高輸出命令前，可優先選 RTK 顯式命令。
+2. RTK 命令失敗時，不得原樣重試；先使用 `repair-record` 記錄 sanitized failure。
+3. 若 RTK 壓縮後資訊不足，回退原命令取得完整資訊。
+4. 不得把 RTK tee raw output、`.env`、token、密碼、完整 API key 或大段 stdout 寫入知識庫。
+
+---
+
+## 隱私與 telemetry
+
+RTK telemetry 是外部工具的 opt-in 功能。本專案不自動啟用 telemetry，不代替使用者同意，也不把 RTK telemetry 當成任務完成條件。
+'@
 
 # ─────────────────────────────────────────────────────────────
 # 1. settings.json（永遠不覆蓋）
@@ -397,6 +520,10 @@ type 選項：`feat` / `fix` / `hotfix` / `refactor` / `chore` / `docs`
 每次修改或新增功能，必須同步撰寫對應的測試。
 '@
 
+if ($EnableRtkHints) {
+  $copilotInstructions = $copilotInstructions.TrimEnd() + "`n`n" + $rtkCopilotBlock.Trim() + "`n"
+}
+
 Write-Utf8File -Path (Join-Path $vscodeDir 'copilot-instructions.md') -Content $copilotInstructions -Overwrite:$Force
 
 # ─────────────────────────────────────────────────────────────
@@ -462,6 +589,10 @@ description: "開始新任務前，自動載入精簡知識庫並啟動問題分
 
 （請在此描述你的任務內容）
 '@
+
+if ($EnableRtkHints) {
+  $startTaskPrompt = $startTaskPrompt.TrimEnd() + "`n`n" + $rtkPromptBlock.Trim() + "`n"
+}
 
 Write-Utf8File -Path (Join-Path $vscodeDir 'start-task.prompt.md') -Content $startTaskPrompt -Overwrite:$Force
 
@@ -552,6 +683,10 @@ Facet 精準切片：直接查 `traps/by-{file,topic,tag,module,symptom}.json`�
 （請在此描述你的任務內容）
 '@
 
+if ($EnableRtkHints) {
+  $startPlanPrompt = $startPlanPrompt.TrimEnd() + "`n`n" + $rtkPromptBlock.Trim() + "`n"
+}
+
 Write-Utf8File -Path (Join-Path $vscodeDir 'start-plan.prompt.md') -Content $startPlanPrompt -Overwrite:$Force
 
 # ─────────────────────────────────────────────────────────────
@@ -623,6 +758,10 @@ description: "任務結束後，更新知識庫並輸出 Commit 訊息"
 
 （可選填：若需補充背景，在此說明）
 '@
+
+if ($EnableRtkHints) {
+  $endTaskPrompt = $endTaskPrompt.TrimEnd() + "`n`n" + $rtkEndTaskBlock.Trim() + "`n"
+}
 
 Write-Utf8File -Path (Join-Path $vscodeDir 'end-task.prompt.md') -Content $endTaskPrompt -Overwrite:$Force
 
@@ -2452,10 +2591,15 @@ artifact-id 可為：`research` / `proposal` / `specs` / `design` / `tasks`
     Write-Host "  [提示] 建議在 .gitignore 加入：/opsx.bat 與 /opsx.ps1（wrapper 為本機工具）" -ForegroundColor Cyan
 }
 
+  if ($EnableRtkHints) {
+    Write-Section "RTK 指引（選配）"
+    Write-Utf8File -Path (Join-Path $projectRoot 'rtk-cheatsheet.md') -Content $rtkCheatsheet -Overwrite:$Force
+  }
+
 # ─────────────────────────────────────────────────────────────
-# 16. 自動執行 rebuild + finish-check（若 Node 可用）
+  # 自動執行 rebuild + finish-check（若 Node 可用）
 # ─────────────────────────────────────────────────────────────
-Write-Section "16. 自動初始化索引（rebuild + finish-check）"
+  Write-Section "自動初始化索引（rebuild + finish-check）"
 
 $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
 if ($nodeCmd) {
@@ -2497,6 +2641,9 @@ Write-Host "  4. 累積 1–2 個 trap 後，把常見主題加入 .vscode/knowl
 if (-not $SkipOpenSpec) {
     Write-Host "  5. 填入 .vscode/openspec/config.yaml 的 context 區（技術棧、程式碼路徑、模組）" -ForegroundColor Gray
     Write-Host "  6. 執行 .\opsx new change <change-name> 建立第一個 OpenSpec change" -ForegroundColor Gray
+}
+if ($EnableRtkHints) {
+  Write-Host "  RTK. 若已安裝 rtk，可參考 rtk-cheatsheet.md；未安裝時維持原命令即可" -ForegroundColor Gray
 }
 Write-Host ""
 Write-Host "建議在 .gitignore 加入：" -ForegroundColor White

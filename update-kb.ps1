@@ -20,13 +20,17 @@
 
 .PARAMETER ForceTemplates
     Replace executable templates such as kb.mjs. Without this switch, a
-    kb.mjs.v3.1.candidate file is created instead of overwriting kb.mjs.
+    kb.mjs.v3.2.candidate file is created instead of overwriting kb.mjs.
 
 .PARAMETER SkipRebuild
     Skip kb.mjs rebuild and finish-check.
 
 .PARAMETER SkipOpenSpec
     Skip OpenSpec scaffold, opsx wrapper, and prompt injection steps.
+
+.PARAMETER EnableRtkHints
+    Add optional RTK terminal-output optimization hints. This never installs
+    RTK, never changes global hooks, and must not make RTK a hard dependency.
 
 .PARAMETER NoReloadPrompt
     Suppress the VS Code reload reminder.
@@ -40,6 +44,7 @@ param(
     [switch]$ForceTemplates,
     [switch]$SkipRebuild,
     [switch]$SkipOpenSpec,
+    [switch]$EnableRtkHints,
     [switch]$NoReloadPrompt
 )
 
@@ -435,6 +440,77 @@ function Ensure-OpenSpecCheatsheet {
     Ensure-File -Path $cheatsheetPath -Content $content -Reason 'Create openspec-cheatsheet.md'
 }
 
+# ---------------------------------------------------------------------------
+# Ensure-RtkCheatsheet
+# Creates rtk-cheatsheet.md in project root if optional RTK hints are enabled.
+# ---------------------------------------------------------------------------
+function Ensure-RtkCheatsheet {
+    $cheatsheetPath = Join-Path $ProjectRootFull 'rtk-cheatsheet.md'
+    $content = @'
+# RTK Command Quick Reference (Optional)
+
+> RTK (Rust Token Killer) compresses terminal output before it reaches the AI context.
+> This project only adds usage hints. It does not install RTK, modify global hooks,
+> or make RTK a required dependency.
+
+## When to use RTK
+
+Good candidates:
+
+- `git status`, `git diff`, `git log`
+- `rg`, `grep`, `find`, `ls`
+- test, lint, build, and type-check commands
+- long logs, large JSON, docker / kubectl output
+
+Do not use RTK as a replacement for:
+
+- `.vscode/knowledge/` traps, facets, FTS5, or repair closure
+- `.vscode/openspec/` behaviour specs and change artifacts
+- VS Code / Copilot built-in read or search tools
+
+## Check availability
+
+PowerShell:
+
+    Get-Command rtk -ErrorAction SilentlyContinue
+    rtk --version
+
+If RTK is not found, use the original command. Missing RTK must never block the task.
+
+## Native Windows
+
+Native Windows supports explicit RTK commands, but auto-rewrite hooks are limited:
+
+    rtk git status
+    rtk git diff
+    rtk git log -n 10
+    rtk grep "keyword" .
+    rtk find "*.php" .
+    rtk test npm test
+    rtk err npm run build
+
+If compact output is not enough, rerun the original command or use RTK verbose mode.
+
+## WSL
+
+WSL can use RTK's full hook / auto-rewrite workflow. Keep fallback commands available,
+especially when the project is normally maintained from native Windows PowerShell.
+
+## Agent Guard integration
+
+1. Prefer explicit RTK commands for high-output terminal commands when RTK is available.
+2. If an RTK command fails, do not retry unchanged; record a sanitized failure with `repair-record`.
+3. If RTK hides necessary detail, fall back to the original command.
+4. Never write RTK tee raw output, `.env`, tokens, passwords, full API keys, or large stdout into the knowledge base.
+
+## Privacy and telemetry
+
+RTK telemetry is an external opt-in feature. This project does not enable telemetry,
+does not grant consent on behalf of the user, and does not treat telemetry as a finish gate.
+'@
+    Ensure-File -Path $cheatsheetPath -Content $content -Reason 'Create rtk-cheatsheet.md'
+}
+
 $ProjectRootFull = [System.IO.Path]::GetFullPath($ProjectRoot)
 $VscodeDir = Join-Path $ProjectRootFull '.vscode'
 $KbDir = Join-Path $VscodeDir 'knowledge'
@@ -454,6 +530,11 @@ Write-Host "Project root : $ProjectRootFull"
 Write-Host "Knowledge dir: $KbDir"
 Write-Host "Mode         : $(if ($Apply) { 'Apply' } else { 'Dry-run' })"
 if ($SkipOpenSpec) { Write-Host '  [mode]  -SkipOpenSpec: skipping OpenSpec scaffold and prompt injection' -ForegroundColor Magenta }
+if ($EnableRtkHints) {
+    $rtkCommand = Get-Command rtk -ErrorAction SilentlyContinue
+    $rtkState = if ($rtkCommand) { 'available' } else { 'not found; hints only, fallback required' }
+    Write-Host "  [mode]  -EnableRtkHints: RTK optional guidance enabled ($rtkState)" -ForegroundColor Magenta
+}
 Write-Host ''
 
 if (-not (Test-Path $ProjectRootFull)) { throw "ProjectRoot does not exist: $ProjectRootFull" }
@@ -559,12 +640,14 @@ if (-not $templateKbMjs) {
 }
 
 Write-Section '6. Version marker'
+$versionFeatures = @('"agent-guard"', '"repair-closure"', '"finish-check"', '"openspec-dual-track"')
+if ($EnableRtkHints) { $versionFeatures += '"rtk-terminal-hints"' }
 $versionJson = @"
 {
   "schema": "local-ai-knowledge-base",
   "version": "3.2",
   "updated_at": "$(Get-Date -Format o)",
-  "features": ["agent-guard", "repair-closure", "finish-check", "openspec-dual-track"]
+    "features": [$($versionFeatures -join ', ')]
 }
 "@
 Save-TextFile -Path (Join-Path $KbDir '.kb-version.json') -Content $versionJson -Reason 'Write .kb-version.json'
@@ -683,7 +766,69 @@ c. Immediately run `kb.mjs rebuild` so spec links are FTS-indexed
         -Reason      'Inject OpenSpec archive step into end-task'
 }
 
-Write-Section '8. rebuild / finish-check'
+Write-Section '8. RTK terminal hints (optional)'
+if (-not $EnableRtkHints) {
+    Write-Host '  [SKIP]  -EnableRtkHints not specified; RTK remains disabled' -ForegroundColor DarkYellow
+} else {
+    Ensure-RtkCheatsheet
+
+    $rtkCopilotBlock = @'
+## RTK terminal output optimization (optional)
+
+RTK (Rust Token Killer) is only a terminal / shell output compression layer for high-output commands such as git, search, tests, build, lint, and logs. It does not replace `.vscode/openspec/` or `.vscode/knowledge/`.
+
+Rules:
+1. Check availability with `Get-Command rtk -ErrorAction SilentlyContinue` or `rtk --version` before use.
+2. If RTK is missing, use the original command. Missing RTK must never fail the task.
+3. Native Windows uses explicit commands such as `rtk git status`, `rtk grep "pattern" .`, `rtk test <command>`, and `rtk err <command>`; do not assume auto-rewrite hooks are active.
+4. WSL can use RTK hooks, but original-command fallback still applies.
+5. VS Code / Copilot built-in read and search tools bypass RTK; RTK only affects terminal commands.
+6. If RTK output is insufficient, use RTK verbose mode or rerun the original command.
+7. If an RTK command fails, follow Agent Guard: `repair-record`, then `repair-status`.
+8. Never write RTK tee raw output, `.env`, tokens, passwords, full API keys, or large stdout into the knowledge base.
+'@
+    Append-Or-Replace-MarkedBlock `
+        -Path (Join-Path $VscodeDir 'copilot-instructions.md') `
+        -StartMarker '<!-- RTK HINTS v3.3 START -->' `
+        -EndMarker   '<!-- RTK HINTS v3.3 END -->' `
+        -NewBlock    $rtkCopilotBlock `
+        -Reason      'Inject optional RTK guidance into copilot-instructions'
+
+    $rtkPromptBlock = @'
+## RTK terminal hints (optional)
+
+If `rtk --version` succeeds, prefer explicit RTK commands for high-output terminal work: `rtk git status`, `rtk git diff`, `rtk grep "keyword" .`, `rtk test <test command>`, or `rtk err <lint/build command>`. RTK only compresses terminal output; it does not replace KB / OpenSpec reads.
+
+If RTK is missing, hides necessary details, or fails, fall back to the original command. Record RTK failures through Agent Guard when relevant, and never store raw RTK tee output or secrets in the knowledge base.
+'@
+    Append-Or-Replace-MarkedBlock `
+        -Path (Join-Path $VscodeDir 'start-task.prompt.md') `
+        -StartMarker '<!-- RTK HINTS v3.3 START -->' `
+        -EndMarker   '<!-- RTK HINTS v3.3 END -->' `
+        -NewBlock    $rtkPromptBlock `
+        -Reason      'Inject optional RTK guidance into start-task'
+
+    Append-Or-Replace-MarkedBlock `
+        -Path (Join-Path $VscodeDir 'start-plan.prompt.md') `
+        -StartMarker '<!-- RTK HINTS v3.3 START -->' `
+        -EndMarker   '<!-- RTK HINTS v3.3 END -->' `
+        -NewBlock    $rtkPromptBlock `
+        -Reason      'Inject optional RTK guidance into start-plan'
+
+    $rtkEndTaskBlock = @'
+## RTK finish note (optional)
+
+If RTK was used during this task, `rtk gain` may be checked for a local savings summary. This is informational only and is not a finish gate. Missing RTK or failed RTK analytics must not block completion. Do not store RTK tee raw output, command secrets, or large stdout in the knowledge base.
+'@
+    Append-Or-Replace-MarkedBlock `
+        -Path (Join-Path $VscodeDir 'end-task.prompt.md') `
+        -StartMarker '<!-- RTK HINTS v3.3 START -->' `
+        -EndMarker   '<!-- RTK HINTS v3.3 END -->' `
+        -NewBlock    $rtkEndTaskBlock `
+        -Reason      'Inject optional RTK guidance into end-task'
+}
+
+Write-Section '9. rebuild / finish-check'
 if ($SkipRebuild) {
     Write-Host '  [SKIP]  -SkipRebuild specified' -ForegroundColor DarkYellow
 } elseif (-not $Apply) {

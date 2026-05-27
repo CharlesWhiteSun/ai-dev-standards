@@ -18,7 +18,7 @@
 
 | 模組 | quickref | 一句話 |
 |------|----------|--------|
-| （請填入） | （路徑） | （說明） |
+| Tooling | [modules/tooling/quickref.md](modules/tooling/quickref.md) | 腳本、AI 工作流程、外部工具選配整合與升級策略 |
 
 ## 已知陷阱（第 3 / 4 / 5 層）
 
