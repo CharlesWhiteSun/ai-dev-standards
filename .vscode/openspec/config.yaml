@@ -29,12 +29,15 @@ rules:
   proposal:
     - 必須說明此變更的影響範圍與主要涉及檔案
     - 禁止靜默選擇解讀：有歧義情境必須在此文件中說明已確認的假設
+    - 涉及程式碼修改時，必須列出 TDD 入口、可驗證範圍與 out-of-scope 項目
   specs:
     - 所有 Scenario 必須使用 GIVEN / WHEN / THEN 格式
     - 核心需求使用 MUST 或 SHALL；建議性規則使用 SHOULD；選擇性使用 MAY
     - Scenario 標頭必須使用四個 # 符號（#### Scenario:）
   design:
     - 遵循最小實作原則：不加未要求的抽象層或 config 選項
+    - 遵循 SOLID；若新增抽象、依賴或跨模組調整，必須說明理由與驗證方式
   tasks:
+    - 程式碼修改前必須先有 TDD 測試步驟；若例外，必須列明替代驗證
     - 必須包含「測試驗證」群組（不可省略）
     - 必須包含「知識庫更新」群組（不可省略），包含 rebuild 和 finish-check 步驟

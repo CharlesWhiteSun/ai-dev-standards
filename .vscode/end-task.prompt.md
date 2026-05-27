@@ -44,7 +44,13 @@ description: "任務結束後，更新知識庫並輸出 Commit 訊息"
 
    > 若為純 bug 修復（無 OpenSpec change），跳過此步驟。
 
-8. **執行**：
+8. **工程約束回顧**：確認本次程式碼修改符合 TDD / SOLID / 可驗證範圍。
+
+  - TDD：列出已新增/更新並通過的測試；若未採 TDD，列明例外理由與替代驗證。
+  - SOLID：確認未新增不必要抽象、未破壞公共契約、未混入無關重構。
+  - 範圍：確認所有行為變更都有測試、規格或手動驗證對應；若有超出原計劃的修改，必須回報。
+
+9. **執行**：
 
        node .vscode/knowledge/scripts/kb.mjs rebuild
   node .vscode/knowledge/scripts/kb.mjs finish-check
@@ -55,7 +61,7 @@ description: "任務結束後，更新知識庫並輸出 Commit 訊息"
    - 重建 `traps/topics/{slug}.md` 與 `topics/INDEX.md`（AUTO 區）
   - 重建 `traps/fts.db`（SQLite FTS5 全文檢索；需 Node 22.5+）
 
-9. **輸出 Commit 訊息**（純文字段落，禁止 fenced code block；格式見 `copilot-instructions.md`「Commit 訊息格式」）
+10. **輸出 Commit 訊息**（純文字段落，禁止 fenced code block；格式見 `copilot-instructions.md`「Commit 訊息格式」）
 
 ## 本次任務摘要
 

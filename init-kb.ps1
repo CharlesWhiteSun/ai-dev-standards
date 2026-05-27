@@ -392,6 +392,31 @@ $copilotInstructions = @'
 - 同一 fingerprint 第 2 次失敗即視為 pending repair；必須改方法，或新增/更新 operational trap。
 - runtime ledger 僅保存摘要與 hash；禁止保存 `.env`、token、密碼、完整 API key 或大段 stdout。
 
+### 程式碼修改約束：TDD / SOLID / 可驗證範圍
+
+凡任務涉及程式碼行為變更，必須優先採用 TDD 與 SOLID 設計原則，並把修改限制在可驗證、可回溯的範圍內。
+
+#### TDD 優先
+
+1. 動手改程式碼前，先找出或補上能描述預期行為的測試；bug 修復需先有可重現失敗的測試，功能新增需先有行為規格或測試案例。
+2. 依 Red → Green → Refactor 節奏工作：先讓測試失敗，再做最小修改讓測試通過，最後只在測試保護下整理設計。
+3. 若現有專案沒有測試框架、測試成本過高或任務僅為文件/註解/純設定，必須在計劃與收尾中明確說明 TDD 例外理由，並提供替代驗證方式。
+
+#### SOLID 約束
+
+- 單一職責：每次修改只處理本任務的責任，不把無關重構混入同一變更。
+- 開放封閉：優先以既有擴充點或局部調整處理新行為，避免修改穩定公共契約。
+- 介面隔離與依賴反轉：不要讓呼叫端依賴不需要的方法或具體實作；新增依賴需有明確理由。
+- 里氏替換：不得讓子類、實作類或替代元件破壞既有呼叫端假設。
+- 不為了套用 SOLID 而新增抽象；抽象只在能降低重複、隔離變動或符合既有架構時加入。
+
+#### 可控管範圍
+
+- 修改前需列出預計異動檔案、對應測試與驗證命令；未列入計劃的行為變更不得順手實作。
+- 不做 drive-by refactor、格式化無關檔案或跨模組設計變更；若發現必要範圍擴大，先暫停並回報使用者確認。
+- 行為契約改變需走 OpenSpec；踩坑或例外需寫入 knowledge，不能只靠口頭說明。
+- 每個程式碼變更都要能對應到測試、規格或明確的手動驗證步驟。
+
 ### 任務結束後
 
 依以下固定順序執行，不得跳過：
@@ -424,7 +449,9 @@ $copilotInstructions = @'
 
    > 若任務僅為 bug 修復（無 OpenSpec change），跳過此步驟。
 
-8. **重建索引並體檢**：
+8. **工程約束回顧**（若涉及程式碼修改）：列出 TDD 測試或例外理由、SOLID 檢查結果、每個行為變更對應的測試/規格/手動驗證；若有超出原計劃的修改，必須回報。
+
+9. **重建索引並體檢**：
 
        node .vscode/knowledge/scripts/kb.mjs rebuild
      node .vscode/knowledge/scripts/kb.mjs finish-check
@@ -432,7 +459,7 @@ $copilotInstructions = @'
   `rebuild` 會自動：重建 `index.jsonl` + facet JSON + `topics/{slug}.md` AUTO 區 + `fts.db`。
   `finish-check` 必須 0 errors 才算結束。
 
-9. **輸出 commit 訊息**（見下方「Commit 訊息格式」），此為任務最後一步。
+10. **輸出 commit 訊息**（見下方「Commit 訊息格式」），此為任務最後一步。
 
 > Token 不足時仍需最後提供 commit 訊息；若知識庫或驗證未完成，必須明確列為未完成事項。
 
@@ -581,9 +608,18 @@ description: "開始新任務前，自動載入精簡知識庫並啟動問題分
 
 依「我要修這個檔，以前在這檔踩過什麼坑？」查 [traps/by-file.json](knowledge/traps/by-file.json)；依「這個 tag 的歷史 bug」查 by-tag.json / by-topic.json / by-module.json / by-symptom.json。
 
+## 程式碼修改守門：TDD / SOLID / 可驗證範圍
+
+若任務涉及程式碼修改，開始實作前必須先確認：
+
+1. **TDD 入口**：先新增或更新能描述目標行為的測試；bug 修復需先重現失敗，功能新增需先定義可驗證行為。若不能 TDD，先說明例外理由與替代驗證。
+2. **最小通過**：只做讓測試通過的最小修改，再在測試保護下重構。
+3. **SOLID 約束**：維持單一職責，避免不必要抽象，不破壞既有公共契約；新增依賴或跨模組調整需有明確理由。
+4. **範圍限制**：只修改任務需要的檔案、對應測試與必要文件/知識庫；若必須擴大範圍，先回報使用者確認。
+
 ## 回報
 
-讀完上述後向用戶回報：涉及模組、命中主題（topic slug）、命中陷阱編號、操作守門摘要（preflight / pending repair / 替代讀取方式）、待探索範圍。
+讀完上述後向用戶回報：涉及模組、命中主題（topic slug）、命中陷阱編號、操作守門摘要（preflight / pending repair / 替代讀取方式）、TDD 入口、SOLID / 範圍約束、待探索範圍。
 
 ## 我的任務描述
 
@@ -646,7 +682,17 @@ description: "規劃模式：讀取精簡知識庫 → 輸出執行計劃 → �
 
 Facet 精準切片：直接查 `traps/by-{file,topic,tag,module,symptom}.json`。
 
-## 步驟二：輸出執行計劃（只輸出文字，不執行）
+## 步驟二：TDD / SOLID / 範圍守門（只規劃，不寫檔）
+
+若任務涉及程式碼修改，計劃必須先列出：
+
+1. **TDD 入口**：要先新增/修改哪個測試、預期先失敗的行為是什麼；若不能 TDD，說明例外理由與替代驗證方式。
+2. **SOLID 檢查**：本次修改如何維持單一職責、避免不必要抽象、避免破壞既有契約。
+3. **可控管範圍**：預計異動檔案、對應測試/驗證命令、不得順手處理的 out-of-scope 項目。
+
+若計劃需要擴大到未列入的檔案、跨模組設計或行為契約變更，必須先列為待確認事項，不得直接實作。
+
+## 步驟三：輸出執行計劃（只輸出文字，不執行）
 
 ### 知識庫確認摘要
 
@@ -656,6 +702,8 @@ Facet 精準切片：直接查 `traps/by-{file,topic,tag,module,symptom}.json`�
 | 命中主題 | （topic slug，附 `topics/{slug}.md` 路徑） |
 | 命中陷阱 | （Trap #N，附 fragment 路徑） |
 | 操作守門 | （preflight 結果、pending repair、需改用的替代讀取方式） |
+| TDD 入口 | （先寫/改哪個測試；若例外，列理由與替代驗證） |
+| SOLID / 範圍 | （設計約束、預計異動檔案、out-of-scope） |
 | 已有規則 | （從 quickref / topic 防呆原則摘錄） |
 | 需探索 | （不確定的部分） |
 
@@ -665,7 +713,7 @@ Facet 精準切片：直接查 `traps/by-{file,topic,tag,module,symptom}.json`�
 
 ### 執行計劃
 
-以 `[探索]` / `[新增]` / `[修改]` / `[測試]` / `[知識庫]` 標籤列出步驟。
+以 `[探索]` / `[TDD]` / `[新增]` / `[修改]` / `[測試]` / `[SOLID檢查]` / `[知識庫]` 標籤列出步驟。
 
 ### 預計異動檔案清單
 
@@ -741,7 +789,13 @@ description: "任務結束後，更新知識庫並輸出 Commit 訊息"
 
    > 若為純 bug 修復（無 OpenSpec change），跳過此步驟。
 
-8. **執行**：
+8. **工程約束回顧**：確認本次程式碼修改符合 TDD / SOLID / 可驗證範圍。
+
+  - TDD：列出已新增/更新並通過的測試；若未採 TDD，列明例外理由與替代驗證。
+  - SOLID：確認未新增不必要抽象、未破壞公共契約、未混入無關重構。
+  - 範圍：確認所有行為變更都有測試、規格或手動驗證對應；若有超出原計劃的修改，必須回報。
+
+9. **執行**：
 
        node .vscode/knowledge/scripts/kb.mjs rebuild
   node .vscode/knowledge/scripts/kb.mjs finish-check
@@ -752,7 +806,7 @@ description: "任務結束後，更新知識庫並輸出 Commit 訊息"
    - 重建 `traps/topics/{slug}.md` 與 `topics/INDEX.md`（AUTO 區）
   - 重建 `traps/fts.db`（SQLite FTS5 全文檢索；需 Node 22.5+）
 
-9. **輸出 Commit 訊息**（純文字段落，禁止 fenced code block；格式見 `copilot-instructions.md`「Commit 訊息格式」）
+10. **輸出 Commit 訊息**（純文字段落，禁止 fenced code block；格式見 `copilot-instructions.md`「Commit 訊息格式」）
 
 ## 本次任務摘要
 
@@ -782,6 +836,7 @@ $kbIndex = @'
 **測試**：（請填入）
 **Agent 操作守門**：[agent/INDEX.md](agent/INDEX.md)
 **OpenSpec 行為規格**：[../openspec/specs/INDEX.md](../openspec/specs/INDEX.md)（WHAT；新功能前必查）
+**程式碼修改守門**：TDD 優先、SOLID 約束、可驗證範圍；詳見 `copilot-instructions.md`
 
 ## 4 層階梯閱讀路徑
 
@@ -845,10 +900,11 @@ $kbIndex = @'
 
 1. 新增/編輯 trap fragment（必帶 `--topics --symptoms`），需要時補 taxonomy.yml
 2. 在當月 `changelog/YYYY-MM.md` 最上方新增一行
-3. 若本任務有失敗或重複嘗試，執行 `repair-status` / `repair-health`
-4. `node .vscode/knowledge/scripts/kb.mjs rebuild`
-5. `node .vscode/knowledge/scripts/kb.mjs finish-check`（必須 0 errors）
-6. 最後輸出 commit 訊息（純文字，不放 fenced code block）
+3. 若涉及程式碼修改，回顧 TDD / SOLID / 可驗證範圍，並列出測試或替代驗證
+4. 若本任務有失敗或重複嘗試，執行 `repair-status` / `repair-health`
+5. `node .vscode/knowledge/scripts/kb.mjs rebuild`
+6. `node .vscode/knowledge/scripts/kb.mjs finish-check`（必須 0 errors）
+7. 最後輸出 commit 訊息（純文字，不放 fenced code block）
 '@
 
 Write-Utf8File -Path (Join-Path $kbDir 'INDEX.md') -Content $kbIndex -Overwrite:$Force
@@ -2154,13 +2210,16 @@ rules:
   proposal:
     - 必須說明此變更的影響範圍與主要涉及檔案
     - 禁止靜默選擇解讀：有歧義情境必須在此文件中說明已確認的假設
+    - 涉及程式碼修改時，必須列出 TDD 入口、可驗證範圍與 out-of-scope 項目
   specs:
     - 所有 Scenario 必須使用 GIVEN / WHEN / THEN 格式
     - 核心需求使用 MUST 或 SHALL；建議性規則使用 SHOULD；選擇性使用 MAY
     - Scenario 標頭必須使用四個 # 符號（#### Scenario:）
   design:
     - 遵循最小實作原則：不加未要求的抽象層或 config 選項
+    - 遵循 SOLID；若新增抽象、依賴或跨模組調整，必須說明理由與驗證方式
   tasks:
+    - 程式碼修改前必須先有 TDD 測試步驟；若例外，必須列明替代驗證
     - 必須包含「測試驗證」群組（不可省略）
     - 必須包含「知識庫更新」群組（不可省略），包含 rebuild 和 finish-check 步驟
 '@
@@ -2203,6 +2262,7 @@ artifacts:
       段落說明：
       - **為何需要此功能**：1-3 句說明動機或問題
       - **功能範圍**：條列在 scope 內和 scope 外的項目；必須明確說明邊界
+      - **TDD 入口**：列出要先新增/修改的測試與預期先失敗的行為；若不能 TDD，說明例外與替代驗證
       - **涉及能力（Capabilities）**：kebab-case 命名，每個對應一個 `specs/<name>/spec.md`
       - **已知風險**：列出陷阱或副作用（參考 research.md 的陷阱清單）
 
@@ -2245,6 +2305,7 @@ artifacts:
       - **架構決策**：決策: 選了 X，因為... 考慮過 Y，但...
       - **資料流**：涉及 DB 讀寫時，說明呼叫順序
       - **涉及檔案**：`- path/to/file.ext（修改說明）`
+      - **SOLID / 範圍控管**：說明如何維持單一職責、避免不必要抽象、避免破壞既有契約，以及哪些檔案明確不在本次範圍
 
       遵循最小實作原則：不加未要求的抽象層，不引入新的設計模式除非必要。
     requires:
@@ -2262,9 +2323,11 @@ artifacts:
       - 每個任務：`- [ ] N.M <描述>`
 
       **必要群組**：
-      1. 程式碼修改（依 design.md 的涉及檔案）
-      2. 測試驗證（**此群組不可省略**）
-      3. 知識庫更新（**此群組不可省略**）
+      1. TDD 測試先行（先新增/修改測試；若例外，列替代驗證）
+      2. 程式碼修改（依 design.md 的涉及檔案；不得超出 scope）
+      3. SOLID / 範圍回顧（確認未混入無關重構或不必要抽象）
+      4. 測試驗證（**此群組不可省略**）
+      5. 知識庫更新（**此群組不可省略**）
 
       **知識庫更新群組範本**：
       - `- [ ] N.1 執行 kb.mjs new-trap（如有新陷阱）`
@@ -2301,6 +2364,7 @@ artifacts:
       - **症狀**：使用者或系統觀察到的異常行為
       - **根本原因**：程式碼層面的根因，說明為何現有邏輯有缺陷
       - **修正方向**：說明修正策略（不是實作細節，是方向）
+      - **TDD 入口**：列出先重現失敗的測試；若無法補測試，說明替代驗證方式
       - **已知風險 / 副作用**：此修正可能影響哪些相關功能
 
       對應的 trap 編號（若已存在）：標注在「症狀」段末尾，格式 `（參考 trap-NNN）`。
@@ -2337,9 +2401,11 @@ artifacts:
       - 每個任務：`- [ ] N.M <描述>`
 
       **必要群組**：
-      1. 程式碼修改（每個受影響檔案至少一個 task）
-      2. 測試驗證（**不可省略**）
-      3. 知識庫更新（**不可省略**）
+      1. TDD 重現（先新增/修改失敗測試；若例外，列替代驗證）
+      2. 程式碼修改（每個受影響檔案至少一個 task；不得超出 scope）
+      3. SOLID / 範圍回顧（確認未混入無關重構或不必要抽象）
+      4. 測試驗證（**不可省略**）
+      5. 知識庫更新（**不可省略**）
 
       **知識庫更新群組範本**：
       - `kb.mjs new-trap --module=<模組> --title="..." --topics=<slug> --symptoms="..."`

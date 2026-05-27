@@ -306,6 +306,8 @@ function Ensure-OpenSpecScaffold {
     Ensure-Directory -Path $archiveDir -Reason 'Create openspec/changes/archive'
     Ensure-Directory -Path $schemasDir -Reason 'Create openspec/schemas'
     Ensure-Directory -Path $specsDir   -Reason 'Create openspec/specs'
+    Ensure-Directory -Path (Join-Path $schemasDir 'project-feature') -Reason 'Create openspec/schemas/project-feature'
+    Ensure-Directory -Path (Join-Path $schemasDir 'project-bugfix') -Reason 'Create openspec/schemas/project-bugfix'
 
     Ensure-File -Path (Join-Path $changesDir '.gitkeep')         -Content '' -Reason 'Create openspec/changes/.gitkeep'
     Ensure-File -Path (Join-Path $archiveDir '.gitkeep')         -Content '' -Reason 'Create openspec/changes/archive/.gitkeep'
@@ -343,15 +345,28 @@ context: |
   - Do not manually edit traps/index.jsonl, by-*.json, or topics AUTO sections
 
 rules:
-  research:
-    - Run kb.mjs start-check and record matching traps and topics
-    - List ambiguities in an Assumptions block; confirm before implementing
-  proposal:
-    - Produce tasks with explicit verification steps
-  tasks:
-    - Each task must have a verification step
+    research:
+        - Run kb.mjs start-check and record matching traps and topics
+        - List ambiguities in an Assumptions block; confirm before implementing
+    proposal:
+        - Produce tasks with explicit verification steps
+        - For code changes, list the TDD entry, verifiable scope, and out-of-scope items
+    design:
+        - Apply SOLID pragmatically; justify new abstractions, dependencies, or cross-module changes
+    tasks:
+        - Code changes must have a TDD test step first; document alternate verification if TDD is not feasible
+        - Each task must have a verification step
 '@
     Ensure-File -Path (Join-Path $openspecDir 'config.yaml') -Content $openspecConfig -Reason 'Create openspec/config.yaml'
+
+    $featureSchemaTemplate = Extract-HereStringFromInit -VariableName 'featureSchema'
+    if ($featureSchemaTemplate) {
+        Ensure-File -Path (Join-Path $schemasDir 'project-feature\schema.yaml') -Content $featureSchemaTemplate -Reason 'Create openspec/schemas/project-feature/schema.yaml'
+    }
+    $bugfixSchemaTemplate = Extract-HereStringFromInit -VariableName 'bugfixSchema'
+    if ($bugfixSchemaTemplate) {
+        Ensure-File -Path (Join-Path $schemasDir 'project-bugfix\schema.yaml') -Content $bugfixSchemaTemplate -Reason 'Create openspec/schemas/project-bugfix/schema.yaml'
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -598,6 +613,70 @@ Append-BlockIfMissing -Path (Join-Path $VscodeDir 'start-plan.prompt.md') -Needl
 Append-BlockIfMissing -Path (Join-Path $VscodeDir 'end-task.prompt.md') -Needle 'finish-check' -Block $guardBlock -Reason 'Add finish-check and commit-last rule to end-task'
 Replace-TextIfMatch -Path (Join-Path $VscodeDir 'end-task.prompt.md') -Pattern 'kb\.mjs\s+health' -Replacement 'kb.mjs finish-check' -Reason 'Replace end-task health with finish-check'
 
+$engineeringGuardBlock = @'
+## 程式碼修改守門：TDD / SOLID / 可驗證範圍
+
+- 程式碼行為變更必須優先採 TDD：先找出或補上測試，讓測試失敗，再做最小通過修改，最後在測試保護下重構。
+- 若無法 TDD，必須在實作前記錄例外理由與替代驗證方式。
+- SOLID 採務實約束：維持單一職責、避免不必要抽象、不破壞公共契約；新增依賴或跨模組調整需說明理由。
+- 範圍需可控管：只修改計劃內的 source、test、docs、knowledge；若範圍擴大，先暫停並確認。
+- 每個行為變更都必須能對應到測試、OpenSpec requirement 或明確手動驗證。
+'@
+Append-Or-Replace-MarkedBlock `
+    -Path (Join-Path $VscodeDir 'copilot-instructions.md') `
+    -StartMarker '<!-- ENGINEERING GUARD v3.3 START -->' `
+    -EndMarker   '<!-- ENGINEERING GUARD v3.3 END -->' `
+    -NewBlock    $engineeringGuardBlock `
+    -Reason      'Inject TDD/SOLID/scope guard into copilot-instructions'
+
+$engineeringStartTaskBlock = @'
+## 程式碼修改守門：TDD / SOLID / 可驗證範圍
+
+實作程式碼變更前必須先確認：
+1. 先找出或補上 TDD 測試；bug 修復需重現失敗，功能新增需定義可驗證行為。若不能 TDD，先說明例外與替代驗證。
+2. 只做讓測試通過的最小修改，再在測試保護下重構。
+3. 維持 SOLID 邊界：單一職責、無不必要抽象、不破壞公共契約，新增依賴需有理由。
+4. 只修改任務需要的檔案、對應測試與必要 docs/knowledge；若範圍擴大，先暫停確認。
+'@
+Append-Or-Replace-MarkedBlock `
+    -Path (Join-Path $VscodeDir 'start-task.prompt.md') `
+    -StartMarker '<!-- ENGINEERING GUARD v3.3 START -->' `
+    -EndMarker   '<!-- ENGINEERING GUARD v3.3 END -->' `
+    -NewBlock    $engineeringStartTaskBlock `
+    -Reason      'Inject TDD/SOLID/scope guard into start-task'
+
+$engineeringStartPlanBlock = @'
+## TDD / SOLID / 範圍計劃守門
+
+若任務涉及程式碼修改，計劃必須包含：
+1. TDD 入口：先修改哪個測試、預期先失敗的行為；若不能 TDD，說明例外與替代驗證。
+2. SOLID 檢查：如何維持單一職責、避免不必要抽象、不破壞公共契約。
+3. 可控管範圍：預計異動檔案、對應測試/驗證命令，以及明確 out-of-scope 項目。
+
+若需要未列入檔案、跨模組設計或行為契約變更，先列為待確認事項再實作。
+'@
+Append-Or-Replace-MarkedBlock `
+    -Path (Join-Path $VscodeDir 'start-plan.prompt.md') `
+    -StartMarker '<!-- ENGINEERING GUARD v3.3 START -->' `
+    -EndMarker   '<!-- ENGINEERING GUARD v3.3 END -->' `
+    -NewBlock    $engineeringStartPlanBlock `
+    -Reason      'Inject TDD/SOLID/scope guard into start-plan'
+
+$engineeringEndTaskBlock = @'
+## 工程約束回顧
+
+輸出最終 commit 訊息前，必須確認：
+- TDD：列出已新增/更新並通過的測試；若未採 TDD，記錄例外與替代驗證。
+- SOLID：沒有新增不必要抽象、沒有破壞公共契約、沒有混入無關重構。
+- 範圍：每個行為變更都能對應到測試、OpenSpec requirement 或明確手動驗證。
+'@
+Append-Or-Replace-MarkedBlock `
+    -Path (Join-Path $VscodeDir 'end-task.prompt.md') `
+    -StartMarker '<!-- ENGINEERING GUARD v3.3 START -->' `
+    -EndMarker   '<!-- ENGINEERING GUARD v3.3 END -->' `
+    -NewBlock    $engineeringEndTaskBlock `
+    -Reason      'Inject TDD/SOLID/scope review into end-task'
+
 Write-Section '4. Knowledge INDEX and taxonomy'
 $indexBlock = @'
 
@@ -611,6 +690,21 @@ $indexBlock = @'
 '@
 Append-BlockIfMissing -Path (Join-Path $KbDir 'INDEX.md') -Needle 'repair-preflight' -Block $indexBlock -Reason 'Add Agent Guard entry to knowledge INDEX'
 Replace-TextIfMatch -Path (Join-Path $KbDir 'INDEX.md') -Pattern 'kb\.mjs\s+health' -Replacement 'kb.mjs finish-check' -Reason 'Replace knowledge INDEX health with finish-check'
+
+$engineeringIndexBlock = @'
+
+## 程式碼修改守門
+
+- 程式碼行為變更需 TDD 優先；若例外，記錄原因與替代驗證。
+- 務實採用 SOLID；避免不必要抽象與無關重構。
+- 範圍需可控管；每個行為變更都要對應測試、OpenSpec requirement 或手動驗證。
+'@
+Append-Or-Replace-MarkedBlock `
+    -Path (Join-Path $KbDir 'INDEX.md') `
+    -StartMarker '<!-- ENGINEERING GUARD v3.3 START -->' `
+    -EndMarker   '<!-- ENGINEERING GUARD v3.3 END -->' `
+    -NewBlock    $engineeringIndexBlock `
+    -Reason      'Inject TDD/SOLID/scope guard into knowledge INDEX'
 
 Ensure-TaxonomyTopic -Slug 'agent-runtime-failure' -Name 'Agent runtime failure closure' -Desc 'Tool or command failures must be recorded as fingerprints and must not be retried unchanged.' -Keywords 'Agent, repair-record, repair-health, fingerprint, repeated failure'
 Ensure-TaxonomyTopic -Slug 'tool-search-visibility' -Name 'Tool search visibility and .vscode reads' -Desc 'Search tools may ignore .vscode or gitignored local knowledge paths; use direct reads or include ignored files.' -Keywords '.vscode, search, include ignored, read_file, list_dir, knowledge'
@@ -640,12 +734,12 @@ if (-not $templateKbMjs) {
 }
 
 Write-Section '6. Version marker'
-$versionFeatures = @('"agent-guard"', '"repair-closure"', '"finish-check"', '"openspec-dual-track"')
+$versionFeatures = @('"agent-guard"', '"repair-closure"', '"finish-check"', '"openspec-dual-track"', '"tdd-solid-scope-guard"')
 if ($EnableRtkHints) { $versionFeatures += '"rtk-terminal-hints"' }
 $versionJson = @"
 {
   "schema": "local-ai-knowledge-base",
-  "version": "3.2",
+    "version": "3.2.2",
   "updated_at": "$(Get-Date -Format o)",
     "features": [$($versionFeatures -join ', ')]
 }

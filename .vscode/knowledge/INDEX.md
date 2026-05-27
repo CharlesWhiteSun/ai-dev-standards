@@ -9,6 +9,7 @@
 **測試**：（請填入）
 **Agent 操作守門**：[agent/INDEX.md](agent/INDEX.md)
 **OpenSpec 行為規格**：[../openspec/specs/INDEX.md](../openspec/specs/INDEX.md)（WHAT；新功能前必查）
+**程式碼修改守門**：TDD 優先、SOLID 約束、可驗證範圍；詳見 [modules/tooling/quickref.md](modules/tooling/quickref.md)
 
 ## 4 層階梯閱讀路徑
 
@@ -72,7 +73,8 @@
 
 1. 新增/編輯 trap fragment（必帶 `--topics --symptoms`），需要時補 taxonomy.yml
 2. 在當月 `changelog/YYYY-MM.md` 最上方新增一行
-3. 若本任務有失敗或重複嘗試，執行 `repair-status` / `repair-health`
-4. `node .vscode/knowledge/scripts/kb.mjs rebuild`
-5. `node .vscode/knowledge/scripts/kb.mjs finish-check`（必須 0 errors）
-6. 最後輸出 commit 訊息（純文字，不放 fenced code block）
+3. 若涉及程式碼修改，回顧 TDD / SOLID / 可驗證範圍，並列出測試或替代驗證
+4. 若本任務有失敗或重複嘗試，執行 `repair-status` / `repair-health`
+5. `node .vscode/knowledge/scripts/kb.mjs rebuild`
+6. `node .vscode/knowledge/scripts/kb.mjs finish-check`（必須 0 errors）
+7. 最後輸出 commit 訊息（純文字，不放 fenced code block）
