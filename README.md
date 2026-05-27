@@ -5,6 +5,7 @@
 > **v3.2（目前版本）**：**4 層階梯 + facets + topics + SQLite FTS5 全文檢索 + Agent Guard / repair closure + OpenSpec 雙軌流程**
 > **v3.2.1（本版新增）**：加入 **RTK terminal 輸出壓縮選配提示**（opt-in，不安裝、不強制、不取代 KB / OpenSpec）
 > **v3.2.2（本版新增）**：加入 **TDD / SOLID / 可驗證範圍守門**，限制程式碼修改必須先定義測試入口、設計約束與驗證對應
+> **v3.2.3（本版新增）**：加入 **衝突確認守門**，測試損壞、功能飄移或規格衝突時必須先暫停並向使用者確認
 > **v3.3（後續規劃）**：RTK doctor / 本機成效摘要 / RTK tee 與 repair closure 橋接
 
 ---
@@ -73,7 +74,8 @@
     Step 0  /opsx:explore        釐清需求邊界與設計假設          ← #start-plan 觸發
     Step 1  /opsx:propose        建立 change，產出 artifacts     ← 確認計劃後手動觸發
     Step 2  kb.mjs start-check   知識庫預讀（陷阱、主題、quickref）← #start-task 觸發
-    Step 3  TDD / SOLID gate     先定義測試入口、設計約束與範圍     ← #start-plan/#start-task 觸發
+        Step 3  TDD / SOLID gate     先定義測試入口、設計約束與範圍     ← #start-plan/#start-task 觸發
+            conflict guard       測試損壞 / 功能飄移 / 規格衝突先確認
     Step 4  /opsx:apply          實作 tasks                      ← #start-task 執行
     Step 5  （語言對應測試指令）  執行測試，確認 0 failures         ← #start-task 執行
     Step 6  kb.mjs new-trap      若發現新陷阱，登錄知識庫          ← #end-task 執行
@@ -87,7 +89,7 @@
 |--------------|---------|------|------|
 | `#start-plan` | Step 0, Step 2 | 分析需求、讀 KB、輸出計劃表，**等待確認才繼續** | Read-only；不寫入任何檔案 |
 | `/opsx:propose` | Step 1 | 確認計劃後，建立 change artifacts（tasks.md、design.md、spec.md） | 確認計劃後**手動觸發**；bug 修復通常跳過 |
-| `#start-task` | Step 2~5 | KB 讀取 + TDD/SOLID 守門 + 實作 + 測試 | 新功能含 `/opsx:apply`；bug 修復跳過 Step 0~1 |
+| `#start-task` | Step 2~5 | KB 讀取 + TDD/SOLID/衝突確認守門 + 實作 + 測試 | 新功能含 `/opsx:apply`；bug 修復跳過 Step 0~1 |
 | `#end-task` | Step 6~9 | KB 更新 + 工程約束回顧 + archive + rebuild + finish-check | archive（Step 7）在 rebuild（Step 8）之前 |
 
 ### 何時觸發 `/opsx:propose`
@@ -167,6 +169,7 @@ v3.2 採**漸進式、非破壞**設計，v3.1 功能完全保留：
 | **Repair closure** | 工具/命令失敗後用 `repair-record` 記錄 sanitized fingerprint；同一錯誤重複會被 `repair-health` 擋下 |
 | **Finish gate** | `finish-check` 整合 taxonomy、health、repair-health，確保任務結束前可回歸檢查 |
 | **TDD / SOLID / 可驗證範圍守門** | 程式碼修改前先定義測試入口與設計約束，收尾時回顧測試、契約與 scope 是否可驗證 |
+| **衝突確認守門** | 測試損壞、修 A 壞 B/C、功能飄移或規格衝突時，Agent 必須先整理證據與選項，等待使用者確認 |
 | **RTK terminal hints（選配）** | 使用 `-EnableRtkHints` 才產生 RTK 指引；RTK 只壓縮 terminal 輸出，不取代 KB / OpenSpec，未安裝時自動回退原命令 |
 | **編碼安全** | 全程 UTF-8 without BOM；`kb.mjs health` 自動檢測 BOM / U+FFFD / quickref 行數 |
 | **Topic 防呆原則手動保留** | `topics/{slug}.md` 用 `<!-- AUTO_BEGIN/END -->` 分隔，AUTO 區自動覆寫，防呆原則段落手動維護不會被洗掉 |
@@ -364,16 +367,19 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 
 ## 程式碼修改守門
 
-v3.2.2 起，prompt、SSOT 與 OpenSpec schema 都會要求程式碼變更先通過工程守門：
+v3.2.2 起，prompt、SSOT 與 OpenSpec schema 都會要求程式碼變更先通過工程守門；v3.2.3 起補上「衝突確認守門」，避免測試與功能漂移時 Agent 持續擴大修改：
 
 | 守門 | 要求 |
 |------|------|
 | TDD 入口 | bug 修復先補可重現失敗的測試；功能新增先補行為測試或 OpenSpec scenario。若不能 TDD，必須在計劃與收尾說明例外與替代驗證。 |
 | SOLID 檢查 | 維持單一職責，不為了套用原則新增無效抽象，不破壞既有公共契約；新增依賴或跨模組調整需說明理由。 |
 | 可驗證範圍 | 計劃先列預計異動檔案、測試與 out-of-scope；若實作中發現需要擴大範圍，必須先停下來確認。 |
+| 衝突確認 | 既有測試轉紅、修 A 壞 B/C、需改測試期待、功能飄移或規格衝突時，先整理證據與可選方向，等待使用者決策。 |
 | 收尾回顧 | `#end-task` 會要求列出測試結果、SOLID 檢查與每個行為變更對應的測試、規格或手動驗證。 |
 
 這個守門的目標是限制 agent 不超出可控管與可驗證的程式碼範圍：先用測試或規格描述要改的行為，再做最小修改，最後才在測試保護下整理設計。
+
+若實作中出現測試損壞、功能飄移或規格衝突，Agent 不得自行修改既有測試期待、snapshot、fixture、mock、驗收條件或公共契約來讓新實作通過。它必須先回報失敗測試/命令、受影響行為、疑似根因、相關檔案與可選路線，等待使用者決定：保留舊行為、接受新行為並更新規格/測試、拆分任務，或先建立回歸測試再修復。
 
 ---
 

@@ -25,11 +25,22 @@
 
 4. 同一 fingerprint 第 2 次失敗即視為 pending repair；必須改方法或新增/更新 operational trap。
 
+## 測試與規格衝突閉環
+
+以下狀況不是一般測試修補，視為需要使用者決策的衝突事件：
+
+- 修 A 後造成既有 B / C 測試失敗，或同一批測試反覆紅綠切換。
+- 需要改既有測試期待、snapshot、fixture、mock 或驗收條件才可通過。
+- 實作結果與 OpenSpec、quickref、既有商務規則或使用者原始需求衝突。
+- 出現功能飄移、單元測試飄移、跨模組耦合或未列入計劃的行為改變。
+
+觸發時不得擴大修改或自行接受新行為。先保留現場，整理最小證據：測試命令、失敗測試、受影響行為、疑似根因、相關檔案與可選路線。若需要記錄到 repair ledger，可使用 `repair-record --tool=test` 記錄摘要；若 CLI 版本未特別區分 test，也要在任務回報或 operational trap 中保留相同資訊。等待使用者確認後，才可選擇保留舊行為、接受新規格、拆分任務或補回歸測試。
+
 ## Fingerprint 欄位
 
 | 欄位 | 說明 |
 |------|------|
-| tool | terminal / search / read / edit / browser / subagent |
+| tool | terminal / search / read / edit / browser / subagent / test |
 | cwd | 執行目錄，預設為專案根目錄 |
 | command | 正規化後的命令或工具摘要 |
 | path | 主要操作路徑 |

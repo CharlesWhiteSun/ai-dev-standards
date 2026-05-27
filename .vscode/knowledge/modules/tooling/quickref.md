@@ -8,6 +8,7 @@
 |------|------|
 | [decision-001](decisions/decision-001.md) | RTK terminal hints 採 opt-in，僅作為輸出壓縮提示，不取代 KB / OpenSpec |
 | [decision-002](decisions/decision-002.md) | 程式碼修改必須先經 TDD / SOLID / 可驗證範圍守門，避免超出可控管或驗證範圍 |
+| [decision-003](decisions/decision-003.md) | 測試損壞、功能飄移或規格衝突時，Agent 必須先暫停並向使用者確認 |
 
 ## 操作規則
 
@@ -20,4 +21,5 @@
 - TDD 優先：bug 修復先補可重現失敗的測試，功能新增先補行為測試或 OpenSpec scenario；若不能 TDD，需寫明例外與替代驗證。
 - SOLID 約束：維持單一職責，不新增無效抽象，不破壞公共契約；新增依賴或跨模組調整需說明理由。
 - 可驗證範圍：計劃先列預計異動檔案、對應測試/驗證命令與 out-of-scope；若範圍擴大，先暫停確認。
+- 衝突確認：既有測試轉紅、修 A 壞 B/C、需改測試期待、功能飄移或規格衝突時，先整理證據與選項並等待使用者決策。
 - 收尾回顧：每個行為變更都要能對應到測試、OpenSpec 規格或明確手動驗證。

@@ -154,6 +154,25 @@ function Replace-TextIfMatch {
     if ($newText -ne $text) { Save-TextFile -Path $Path -Content $newText -Reason $Reason }
 }
 
+function Insert-LineAfterNeedleIfMissing {
+    param([string]$Path, [string]$MissingNeedle, [string]$Needle, [string]$InsertLine, [string]$Reason)
+    if (-not (Test-Path $Path)) { return }
+    $text = Read-Utf8File $Path
+    if ($text.Contains($MissingNeedle)) {
+        Write-Host "  [SKIP]  $Reason already present" -ForegroundColor DarkYellow
+        return
+    }
+    $idx = $text.IndexOf($Needle)
+    if ($idx -lt 0) { return }
+    $lineEnd = $text.IndexOf("`n", $idx)
+    if ($lineEnd -lt 0) {
+        $newText = $text.TrimEnd() + "`n" + $InsertLine + "`n"
+    } else {
+        $newText = $text.Insert($lineEnd + 1, $InsertLine + "`n")
+    }
+    Save-TextFile -Path $Path -Content $newText -Reason $Reason
+}
+
 function Add-JsonPropertyBlock {
     param([string]$Content, [string]$Block)
     $trimmed = $Content.TrimEnd()
@@ -285,7 +304,7 @@ function Append-Or-Replace-MarkedBlock {
             return
         }
     }
-    # Markers not found — append
+    # Markers not found - append
     $appended = $text.TrimEnd() + "`n`n" + $replacement + "`n"
     Save-TextFile -Path $Path -Content $appended -Reason "$Reason (append new block)"
 }
@@ -351,22 +370,41 @@ rules:
     proposal:
         - Produce tasks with explicit verification steps
         - For code changes, list the TDD entry, verifiable scope, and out-of-scope items
+        - If tests break, feature drift appears, specs conflict, or old test expectations must change, list it as a user-confirmation item
     design:
         - Apply SOLID pragmatically; justify new abstractions, dependencies, or cross-module changes
     tasks:
         - Code changes must have a TDD test step first; document alternate verification if TDD is not feasible
+        - Stop and ask the user before accepting changed behavior or rewriting existing test expectations
         - Each task must have a verification step
 '@
-    Ensure-File -Path (Join-Path $openspecDir 'config.yaml') -Content $openspecConfig -Reason 'Create openspec/config.yaml'
+    $openspecConfigPath = Join-Path $openspecDir 'config.yaml'
+    Ensure-File -Path $openspecConfigPath -Content $openspecConfig -Reason 'Create openspec/config.yaml'
+    Insert-LineAfterNeedleIfMissing -Path $openspecConfigPath -MissingNeedle 'If tests break, feature drift appears' -Needle '- For code changes, list the TDD entry, verifiable scope, and out-of-scope items' -InsertLine '        - If tests break, feature drift appears, specs conflict, or old test expectations must change, list it as a user-confirmation item' -Reason 'Inject conflict guard into openspec/config.yaml proposal rules'
+    Insert-LineAfterNeedleIfMissing -Path $openspecConfigPath -MissingNeedle 'Stop and ask the user before accepting changed behavior' -Needle '- Code changes must have a TDD test step first; document alternate verification if TDD is not feasible' -InsertLine '        - Stop and ask the user before accepting changed behavior or rewriting existing test expectations' -Reason 'Inject conflict guard into openspec/config.yaml task rules'
+    Append-BlockIfMissing -Path $openspecConfigPath -Needle $CnConflict -Block '# Conflict confirmation guard v3.2.3
+# If tests break, feature drift appears, specs conflict, or old test expectations must change,
+# stop expanding edits and ask the user before accepting changed behavior.' -Reason 'Add conflict confirmation comments to openspec/config.yaml'
 
     $featureSchemaTemplate = Extract-HereStringFromInit -VariableName 'featureSchema'
+    $featureSchemaPath = Join-Path $schemasDir 'project-feature\schema.yaml'
     if ($featureSchemaTemplate) {
-        Ensure-File -Path (Join-Path $schemasDir 'project-feature\schema.yaml') -Content $featureSchemaTemplate -Reason 'Create openspec/schemas/project-feature/schema.yaml'
+        Ensure-File -Path $featureSchemaPath -Content $featureSchemaTemplate -Reason 'Create openspec/schemas/project-feature/schema.yaml'
     }
+    Insert-LineAfterNeedleIfMissing -Path $featureSchemaPath -MissingNeedle '**Conflict confirmation**' -Needle '- **TDD entry**' -InsertLine '      - **Conflict confirmation**: list tests, behavior contracts, or business rules that require user confirmation if affected' -Reason 'Inject conflict confirmation into project-feature proposal schema'
+    Append-BlockIfMissing -Path $featureSchemaPath -Needle $CnConflict -Block '# Conflict confirmation guard v3.2.3
+# If tests break, feature drift appears, specs conflict, or old test expectations must change,
+# stop expanding edits and ask the user before accepting changed behavior.' -Reason 'Add conflict confirmation comments to project-feature schema'
+
     $bugfixSchemaTemplate = Extract-HereStringFromInit -VariableName 'bugfixSchema'
+    $bugfixSchemaPath = Join-Path $schemasDir 'project-bugfix\schema.yaml'
     if ($bugfixSchemaTemplate) {
-        Ensure-File -Path (Join-Path $schemasDir 'project-bugfix\schema.yaml') -Content $bugfixSchemaTemplate -Reason 'Create openspec/schemas/project-bugfix/schema.yaml'
+        Ensure-File -Path $bugfixSchemaPath -Content $bugfixSchemaTemplate -Reason 'Create openspec/schemas/project-bugfix/schema.yaml'
     }
+    Insert-LineAfterNeedleIfMissing -Path $bugfixSchemaPath -MissingNeedle '**Conflict confirmation**' -Needle '- **TDD entry**' -InsertLine '      - **Conflict confirmation**: list tests, behavior contracts, or business rules that require user confirmation if affected' -Reason 'Inject conflict confirmation into project-bugfix proposal schema'
+    Append-BlockIfMissing -Path $bugfixSchemaPath -Needle $CnConflict -Block '# Conflict confirmation guard v3.2.3
+# If tests break, feature drift appears, specs conflict, or old test expectations must change,
+# stop expanding edits and ask the user before accepting changed behavior.' -Reason 'Add conflict confirmation comments to project-bugfix schema'
 }
 
 # ---------------------------------------------------------------------------
@@ -534,6 +572,7 @@ $TaxonomyPath = Join-Path $KbDir 'traps\topics-taxonomy.yml'
 $Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $BackupDir = Join-Path $KbDir "backups\$Stamp"
 $script:BackedUp = @{}
+$CnConflict = -join ([char[]](0x885D,0x7A81))
 
 Write-Host ''
 Write-Host '========================================================' -ForegroundColor Cyan
@@ -583,6 +622,10 @@ $agentIndex = @'
 3. Run `repair-status` to check repeated fingerprints.
 4. The second failure with the same fingerprint becomes pending repair. Change method or create/update an operational trap.
 
+## Test and Spec Conflict Closure
+
+When a change makes existing tests fail, requires changing old test expectations, causes feature drift, or conflicts with OpenSpec / quickref / user requirements, stop expanding edits and ask the user first. Record the test command, failed tests, affected behavior, suspected cause, related files, and possible paths forward. Do not accept new behavior or rewrite test expectations without user confirmation.
+
 ## Finish Rules
 
 - `repair-health` must have 0 errors before task completion.
@@ -595,6 +638,15 @@ if ($ForceTemplates) {
 } else {
     Append-BlockIfMissing -Path $agentIndexPath -Needle 'repair-preflight' -Block $agentIndex -Reason 'Add agent repair closure to agent/INDEX.md'
 }
+$agentConflictBlock = @'
+
+## Test and Spec Conflict Closure
+
+- If existing tests fail, fixing A breaks B/C, test expectations must change, feature drift appears, or specs conflict, stop expanding edits and do not accept new behavior silently.
+- Collect the test command, failed tests, affected behavior, suspected cause, related files, and possible paths forward before asking the user.
+- Continue only after the user chooses whether to preserve old behavior, accept a new spec, split the task, or add regression coverage first.
+'@
+Append-BlockIfMissing -Path $agentIndexPath -Needle $CnConflict -Block $agentConflictBlock -Reason 'Add test/spec conflict closure to agent/INDEX.md'
 Ensure-File -Path (Join-Path $KbDir 'agent\generated\.gitkeep') -Content '' -Reason 'Create agent/generated/.gitkeep'
 
 Write-Section '3. Prompts and SSOT'
@@ -614,13 +666,13 @@ Append-BlockIfMissing -Path (Join-Path $VscodeDir 'end-task.prompt.md') -Needle 
 Replace-TextIfMatch -Path (Join-Path $VscodeDir 'end-task.prompt.md') -Pattern 'kb\.mjs\s+health' -Replacement 'kb.mjs finish-check' -Reason 'Replace end-task health with finish-check'
 
 $engineeringGuardBlock = @'
-## 程式碼修改守門：TDD / SOLID / 可驗證範圍
+## Engineering Guard: TDD / SOLID / Verifiable Scope
 
-- 程式碼行為變更必須優先採 TDD：先找出或補上測試，讓測試失敗，再做最小通過修改，最後在測試保護下重構。
-- 若無法 TDD，必須在實作前記錄例外理由與替代驗證方式。
-- SOLID 採務實約束：維持單一職責、避免不必要抽象、不破壞公共契約；新增依賴或跨模組調整需說明理由。
-- 範圍需可控管：只修改計劃內的 source、test、docs、knowledge；若範圍擴大，先暫停並確認。
-- 每個行為變更都必須能對應到測試、OpenSpec requirement 或明確手動驗證。
+- Code behavior changes must prefer TDD: find or add a test first, make it fail, implement the smallest passing change, then refactor under test coverage.
+- If TDD is not feasible, record the exception and alternate verification before implementation.
+- Apply SOLID pragmatically: keep single responsibility, avoid needless abstractions, preserve public contracts, and justify new dependencies or cross-module changes.
+- Keep scope controlled: only touch planned source, test, docs, and knowledge files. If scope expands, stop and confirm.
+- Every behavior change must map to a test, OpenSpec requirement, or explicit manual verification.
 '@
 Append-Or-Replace-MarkedBlock `
     -Path (Join-Path $VscodeDir 'copilot-instructions.md') `
@@ -630,13 +682,13 @@ Append-Or-Replace-MarkedBlock `
     -Reason      'Inject TDD/SOLID/scope guard into copilot-instructions'
 
 $engineeringStartTaskBlock = @'
-## 程式碼修改守門：TDD / SOLID / 可驗證範圍
+## Engineering Guard: TDD / SOLID / Verifiable Scope
 
-實作程式碼變更前必須先確認：
-1. 先找出或補上 TDD 測試；bug 修復需重現失敗，功能新增需定義可驗證行為。若不能 TDD，先說明例外與替代驗證。
-2. 只做讓測試通過的最小修改，再在測試保護下重構。
-3. 維持 SOLID 邊界：單一職責、無不必要抽象、不破壞公共契約，新增依賴需有理由。
-4. 只修改任務需要的檔案、對應測試與必要 docs/knowledge；若範圍擴大，先暫停確認。
+Before code changes, confirm:
+1. Add or identify the TDD test first. Bug fixes reproduce failure; features define verifiable behavior. If TDD is not feasible, explain the exception and alternate verification.
+2. Make the smallest change needed to pass, then refactor under test coverage.
+3. Keep SOLID boundaries: single responsibility, no needless abstractions, no public contract breakage, justified new dependencies.
+4. Touch only files, tests, docs, and knowledge needed for this task. If scope expands, stop and confirm.
 '@
 Append-Or-Replace-MarkedBlock `
     -Path (Join-Path $VscodeDir 'start-task.prompt.md') `
@@ -646,14 +698,14 @@ Append-Or-Replace-MarkedBlock `
     -Reason      'Inject TDD/SOLID/scope guard into start-task'
 
 $engineeringStartPlanBlock = @'
-## TDD / SOLID / 範圍計劃守門
+## TDD / SOLID / Scope Planning Guard
 
-若任務涉及程式碼修改，計劃必須包含：
-1. TDD 入口：先修改哪個測試、預期先失敗的行為；若不能 TDD，說明例外與替代驗證。
-2. SOLID 檢查：如何維持單一職責、避免不必要抽象、不破壞公共契約。
-3. 可控管範圍：預計異動檔案、對應測試/驗證命令，以及明確 out-of-scope 項目。
+For code changes, the plan must include:
+1. TDD entry: which test changes first and what behavior should fail first; if TDD is not feasible, explain exception and alternate verification.
+2. SOLID check: how the change preserves single responsibility, avoids needless abstractions, and protects public contracts.
+3. Controlled scope: planned files, validation commands, and explicit out-of-scope items.
 
-若需要未列入檔案、跨模組設計或行為契約變更，先列為待確認事項再實作。
+If unplanned files, cross-module design, or behavior contract changes are needed, list them as confirmation items before implementation.
 '@
 Append-Or-Replace-MarkedBlock `
     -Path (Join-Path $VscodeDir 'start-plan.prompt.md') `
@@ -663,12 +715,12 @@ Append-Or-Replace-MarkedBlock `
     -Reason      'Inject TDD/SOLID/scope guard into start-plan'
 
 $engineeringEndTaskBlock = @'
-## 工程約束回顧
+## Engineering Constraint Review
 
-輸出最終 commit 訊息前，必須確認：
-- TDD：列出已新增/更新並通過的測試；若未採 TDD，記錄例外與替代驗證。
-- SOLID：沒有新增不必要抽象、沒有破壞公共契約、沒有混入無關重構。
-- 範圍：每個行為變更都能對應到測試、OpenSpec requirement 或明確手動驗證。
+Before the final commit message, confirm:
+- TDD: list added/updated passing tests; if TDD was not used, record exception and alternate verification.
+- SOLID: no needless abstractions, no public contract breakage, no unrelated refactors.
+- Scope: every behavior change maps to a test, OpenSpec requirement, or explicit manual verification.
 '@
 Append-Or-Replace-MarkedBlock `
     -Path (Join-Path $VscodeDir 'end-task.prompt.md') `
@@ -676,6 +728,37 @@ Append-Or-Replace-MarkedBlock `
     -EndMarker   '<!-- ENGINEERING GUARD v3.3 END -->' `
     -NewBlock    $engineeringEndTaskBlock `
     -Reason      'Inject TDD/SOLID/scope review into end-task'
+
+$conflictGuardBlock = @'
+## Conflict Detection and User Confirmation Guard
+
+- If tests break, fixing A breaks B/C, feature drift appears, unit-test drift appears, specs conflict, existing test expectations must change, or scope expands to unplanned modules, stop expanding edits immediately.
+- The agent may only gather minimal evidence: test command, failed tests, affected behavior, suspected cause, related files, and possible paths forward.
+- Before user confirmation, do not rewrite test expectations, snapshots, fixtures, mocks, acceptance criteria, or public contracts. Do not treat a spec conflict as an ordinary bug.
+- Only obvious in-plan syntax, test setup, or missing mock fixes may be corrected immediately, and only when no behavior contract changes.
+'@
+Append-BlockIfMissing -Path (Join-Path $VscodeDir 'copilot-instructions.md') -Needle $CnConflict -Block $conflictGuardBlock -Reason 'Inject conflict confirmation guard into copilot-instructions'
+
+$conflictStartTaskBlock = @'
+## Conflict Confirmation Guard
+
+During implementation, if existing tests fail, fixing A breaks B/C, test expectations must change, feature drift appears, or specs conflict, stop expanding edits immediately. Report failed tests/commands, affected behavior, suspected cause, known evidence, and options; continue only after user confirmation.
+'@
+Append-BlockIfMissing -Path (Join-Path $VscodeDir 'start-task.prompt.md') -Needle $CnConflict -Block $conflictStartTaskBlock -Reason 'Inject conflict confirmation guard into start-task'
+
+$conflictStartPlanBlock = @'
+## Conflict Confirmation Planning Guard
+
+For code changes, the plan must list conflict stop lines: which existing tests, behavior contracts, OpenSpec requirements, business rules, or cross-module dependencies require user confirmation if affected. If old test expectations, snapshots, fixtures, mocks, or acceptance criteria might need changes, list them as confirmation items.
+'@
+Append-BlockIfMissing -Path (Join-Path $VscodeDir 'start-plan.prompt.md') -Needle $CnConflict -Block $conflictStartPlanBlock -Reason 'Inject conflict confirmation planning guard into start-plan'
+
+$conflictEndTaskBlock = @'
+## Conflict Confirmation Review
+
+At closure, state whether tests broke, feature drift appeared, specs conflicted, or test expectations needed changes. If yes, list the evidence reported to the user, the user decision, and follow-up spec/test/knowledge updates. If no, explicitly state that no unplanned behavior changes were found.
+'@
+Append-BlockIfMissing -Path (Join-Path $VscodeDir 'end-task.prompt.md') -Needle $CnConflict -Block $conflictEndTaskBlock -Reason 'Inject conflict confirmation review into end-task'
 
 Write-Section '4. Knowledge INDEX and taxonomy'
 $indexBlock = @'
@@ -693,11 +776,11 @@ Replace-TextIfMatch -Path (Join-Path $KbDir 'INDEX.md') -Pattern 'kb\.mjs\s+heal
 
 $engineeringIndexBlock = @'
 
-## 程式碼修改守門
+## Engineering Guard
 
-- 程式碼行為變更需 TDD 優先；若例外，記錄原因與替代驗證。
-- 務實採用 SOLID；避免不必要抽象與無關重構。
-- 範圍需可控管；每個行為變更都要對應測試、OpenSpec requirement 或手動驗證。
+- Code behavior changes should prefer TDD; record exception and alternate verification when needed.
+- Apply SOLID pragmatically; avoid needless abstractions and unrelated refactors.
+- Scope must be controlled; every behavior change maps to a test, OpenSpec requirement, or manual verification.
 '@
 Append-Or-Replace-MarkedBlock `
     -Path (Join-Path $KbDir 'INDEX.md') `
@@ -705,6 +788,15 @@ Append-Or-Replace-MarkedBlock `
     -EndMarker   '<!-- ENGINEERING GUARD v3.3 END -->' `
     -NewBlock    $engineeringIndexBlock `
     -Reason      'Inject TDD/SOLID/scope guard into knowledge INDEX'
+
+$conflictIndexBlock = @'
+
+## Conflict Confirmation Guard
+
+- If tests break, feature drift appears, or specs conflict, stop and ask the user before changing expectations or accepting new behavior.
+- Report failed tests/commands, affected behavior, suspected cause, related files, and possible paths forward.
+'@
+Append-BlockIfMissing -Path (Join-Path $KbDir 'INDEX.md') -Needle $CnConflict -Block $conflictIndexBlock -Reason 'Inject conflict confirmation guard into knowledge INDEX'
 
 Ensure-TaxonomyTopic -Slug 'agent-runtime-failure' -Name 'Agent runtime failure closure' -Desc 'Tool or command failures must be recorded as fingerprints and must not be retried unchanged.' -Keywords 'Agent, repair-record, repair-health, fingerprint, repeated failure'
 Ensure-TaxonomyTopic -Slug 'tool-search-visibility' -Name 'Tool search visibility and .vscode reads' -Desc 'Search tools may ignore .vscode or gitignored local knowledge paths; use direct reads or include ignored files.' -Keywords '.vscode, search, include ignored, read_file, list_dir, knowledge'
@@ -734,12 +826,12 @@ if (-not $templateKbMjs) {
 }
 
 Write-Section '6. Version marker'
-$versionFeatures = @('"agent-guard"', '"repair-closure"', '"finish-check"', '"openspec-dual-track"', '"tdd-solid-scope-guard"')
+$versionFeatures = @('"agent-guard"', '"repair-closure"', '"finish-check"', '"openspec-dual-track"', '"tdd-solid-scope-guard"', '"conflict-confirmation-guard"')
 if ($EnableRtkHints) { $versionFeatures += '"rtk-terminal-hints"' }
 $versionJson = @"
 {
   "schema": "local-ai-knowledge-base",
-    "version": "3.2.2",
+    "version": "3.2.3",
   "updated_at": "$(Get-Date -Format o)",
     "features": [$($versionFeatures -join ', ')]
 }
