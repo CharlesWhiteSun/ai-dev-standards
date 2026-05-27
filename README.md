@@ -2,11 +2,15 @@
 
 透過一鍵 PowerShell 腳本，在任何專案中建立**可隨知識量擴張的結構化 AI 協作知識庫**，讓 GitHub Copilot Chat 在每次對話中都能高效率地讀取歷史踩坑、遵守統一規範，並在任務結束時自動歸檔新陷阱。
 
-> **v3.2（目前版本）**：**4 層階梯 + facets + topics + SQLite FTS5 全文檢索 + Agent Guard / repair closure + OpenSpec 雙軌流程**
-> **v3.2.1（本版新增）**：加入 **RTK terminal 輸出壓縮選配提示**（opt-in，不安裝、不強制、不取代 KB / OpenSpec）
-> **v3.2.2（本版新增）**：加入 **TDD / SOLID / 可驗證範圍守門**，限制程式碼修改必須先定義測試入口、設計約束與驗證對應
-> **v3.2.3（本版新增）**：加入 **衝突確認守門**，測試損壞、功能飄移或規格衝突時必須先暫停並向使用者確認
-> **v3.3（後續規劃）**：RTK doctor / 本機成效摘要 / RTK tee 與 repair closure 橋接
+## 版本摘要
+
+| 版本 | 狀態 | 重點 |
+|------|------|------|
+| v3.2 | 目前版本 | 4 層階梯、facets、topics、SQLite FTS5、Agent Guard / repair closure、OpenSpec 雙軌流程 |
+| v3.2.1 | 本版新增 | RTK terminal 輸出壓縮選配提示；opt-in，不安裝、不強制、不取代 KB / OpenSpec |
+| v3.2.2 | 本版新增 | TDD / SOLID / 可驗證範圍守門；程式碼修改前先定義測試入口、設計約束與驗證對應 |
+| v3.2.3 | 本版新增 | 衝突確認守門；測試損壞、功能飄移或規格衝突時，必須先暫停並向使用者確認 |
+| v3.3 | 後續規劃 | RTK doctor、本機成效摘要、RTK tee 與 repair closure 橋接 |
 
 ---
 
@@ -33,8 +37,10 @@
 
 ## v3.2 升級路線（KB + OpenSpec）
 
-> **v3.1** = Knowledge Base only（4 層階梯 + facets + topics + Agent Guard + repair closure + finish-check）
-> **v3.2** = Knowledge Base + OpenSpec 雙軌（在 v3.1 基礎上加入行為規格層）
+| 路線 | 定位 | 內容 |
+|------|------|------|
+| v3.1 | Knowledge Base only | 4 層階梯、facets、topics、Agent Guard、repair closure、finish-check |
+| v3.2 | Knowledge Base + OpenSpec 雙軌 | 在 v3.1 基礎上加入行為規格層 |
 
 ### 兩套系統分工
 
@@ -44,53 +50,78 @@
 | **觸發時機** | 新功能 / 規格變更 / 跨模組行為設計 | 踩坑、bug 修復、設計決策補錄 |
 | **入口指令** | `/opsx:explore`、`/opsx:propose` | `kb.mjs new-trap` |
 | **結束動作** | `/opsx:archive` → `kb.mjs rebuild` | `kb.mjs rebuild` |
-| **產出位置** | `.vscode/openspec/changes/{name}/`（change artifacts）`.vscode/openspec/specs/{module}/`（行為契約）| `traps/trap-NNN.md`（陷阱）`traps/topics/{slug}.md`（主題集群）|
+| **產出位置** | `.vscode/openspec/changes/{name}/`（change artifacts）<br>`.vscode/openspec/specs/{module}/`（行為契約）| `traps/trap-NNN.md`（陷阱）<br>`traps/topics/{slug}.md`（主題集群）|
 
 ### v3.2 架構概觀
 
-    ┌──────────────────────────────────────────────────────────────┐
-    │                      雙軌儲存系統                            │
-    │  ┌──────────────────────┐      ┌────────────────────────┐  │
-    │  │      OpenSpec        │      │    Knowledge Base      │  │
-    │  │  .vscode/openspec/   │      │  .vscode/knowledge/    │  │
-    │  │  WHAT：行為規格      │      │  WHY / HOW-NOT-TO      │  │
-    │  │  changes/{name}/     │      │  traps/trap-NNN.md     │  │
-    │  │  specs/{module}/     │      │  traps/topics/         │  │
-    │  └──────────────────────┘      └────────────────────────┘  │
-    └──────────────────────────────────────────────────────────────┘
+``` mermaid
+flowchart LR
+    subgraph Storage[雙軌儲存系統]
+        OpenSpec["OpenSpec<br>.vscode/openspec/<br>WHAT：行為規格<br>changes/{name}/<br>specs/{module}/"]
+        KB["Knowledge Base<br>.vscode/knowledge/<br>WHY / HOW-NOT-TO<br>traps/trap-NNN.md<br>traps/topics/"]
+    end
 
-    ┌──────────────┬─────────────────┬──────────────┬────────────────┐
-    │ #start-plan  │  /opsx:propose  │ #start-task  │   #end-task    │
-    │  預讀+計劃   │   建立 change   │ KB讀取+實作  │  KB更新+歸檔   │
-    │ （等待確認） │    artifacts    │ /opsx:apply  │ /opsx:archive  │
-    │              │  確認計劃後觸發 │   執行測試   │   rebuild      │
-    │              │                 │              │   finish-check │
-    └──────────────┴─────────────────┴──────────────┴────────────────┘
+    Plan["#start-plan<br>預讀與計劃<br>等待確認"]
+    Propose["/opsx:propose<br>建立 change artifacts"]
+    Task["#start-task<br>KB 讀取、實作、測試"]
+    End["#end-task<br>KB 更新、archive、rebuild、finish-check"]
+
+    Plan --> Propose --> Task --> End
+    OpenSpec -. 行為契約 .-> Plan
+    OpenSpec -. change tracking .-> Task
+    KB -. 歷史陷阱與守門 .-> Plan
+    KB -. repair closure .-> End
+```
+
+| 區塊 | 主要責任 | 產出 |
+|------|----------|------|
+| `#start-plan` | 預讀 OpenSpec / KB，整理計劃並等待確認 | 風險、範圍、測試入口、衝突停止線 |
+| `/opsx:propose` | 將已確認計劃轉成 change artifacts | `tasks.md`、`design.md`、`spec.md` |
+| `#start-task` | 依計劃實作，執行 TDD / SOLID / 衝突確認守門 | 最小修改、對應測試、可驗證結果 |
+| `#end-task` | 更新 KB、封存 OpenSpec change、重建索引 | changelog、trap、archive、finish-check |
 
 ### v3.2 完整開發流程
 
 初始化或升級後，可在 Copilot Chat 以以下流程作業：
 
-    Step 0  /opsx:explore        釐清需求邊界與設計假設          ← #start-plan 觸發
-    Step 1  /opsx:propose        建立 change，產出 artifacts     ← 確認計劃後手動觸發
-    Step 2  kb.mjs start-check   知識庫預讀（陷阱、主題、quickref）← #start-task 觸發
-        Step 3  TDD / SOLID gate     先定義測試入口、設計約束與範圍     ← #start-plan/#start-task 觸發
-            conflict guard       測試損壞 / 功能飄移 / 規格衝突先確認
-    Step 4  /opsx:apply          實作 tasks                      ← #start-task 執行
-    Step 5  （語言對應測試指令）  執行測試，確認 0 failures         ← #start-task 執行
-    Step 6  kb.mjs new-trap      若發現新陷阱，登錄知識庫          ← #end-task 執行
-    Step 7  /opsx:archive        封存 change                     ← #end-task 執行
-    Step 8  kb.mjs rebuild       重建知識庫索引                   ← #end-task 執行
-    Step 9  kb.mjs finish-check  體檢（errors=0）                 ← #end-task 執行
+| Step | 動作 | 目的 | 觸發者 |
+|------|------|------|--------|
+| 0 | `/opsx:explore` | 釐清需求邊界與設計假設 | `#start-plan` |
+| 1 | `/opsx:propose` | 建立 change，產出 artifacts | 確認計劃後手動觸發 |
+| 2 | `kb.mjs start-check` | 預讀陷阱、主題、quickref | `#start-task` |
+| 3 | TDD / SOLID gate | 先定義測試入口、設計約束與範圍 | `#start-plan` / `#start-task` |
+| 4 | conflict guard | 測試損壞、功能飄移或規格衝突時先確認 | `#start-plan` / `#start-task` |
+| 5 | `/opsx:apply` | 依 tasks 實作 | `#start-task` |
+| 6 | 語言對應測試指令 | 執行測試，確認 0 failures | `#start-task` |
+| 7 | `kb.mjs new-trap` | 若發現新陷阱，登錄知識庫 | `#end-task` |
+| 8 | `/opsx:archive` | 封存 change | `#end-task` |
+| 9 | `kb.mjs rebuild` | 重建知識庫索引 | `#end-task` |
+| 10 | `kb.mjs finish-check` | 體檢，確認 errors=0 | `#end-task` |
+
+``` mermaid
+flowchart TD
+    Explore["Step 0<br>opsx explore"] --> Propose["Step 1<br>opsx propose"]
+    Propose --> StartCheck["Step 2<br>kb.mjs start-check"]
+    StartCheck --> Gate["Step 3<br>TDD / SOLID gate"]
+    Gate --> Conflict{"Step 4<br>是否觸發衝突確認?"}
+    Conflict -- "是" --> Confirm["整理證據與選項<br>等待使用者決策"]
+    Confirm --> Apply["Step 5<br>opsx apply"]
+    Conflict -- "否" --> Apply
+    Apply --> Test["Step 6<br>執行測試"]
+    Test --> Trap["Step 7<br>必要時 new-trap"]
+    Trap --> Archive["Step 8<br>opsx archive"]
+    Archive --> Rebuild["Step 9<br>kb.mjs rebuild"]
+    Rebuild --> Finish["Step 10<br>kb.mjs finish-check"]
+```
 
 ### Prompt 入口對照（v3.2）
 
 | Prompt / 指令 | 涵蓋步驟 | 用途 | 注意 |
 |--------------|---------|------|------|
-| `#start-plan` | Step 0, Step 2 | 分析需求、讀 KB、輸出計劃表，**等待確認才繼續** | Read-only；不寫入任何檔案 |
+| `#start-plan` | Step 0, Step 2~4 | 分析需求、讀 KB、輸出計劃表，**等待確認才繼續** | Read-only；不寫入任何檔案 |
 | `/opsx:propose` | Step 1 | 確認計劃後，建立 change artifacts（tasks.md、design.md、spec.md） | 確認計劃後**手動觸發**；bug 修復通常跳過 |
-| `#start-task` | Step 2~5 | KB 讀取 + TDD/SOLID/衝突確認守門 + 實作 + 測試 | 新功能含 `/opsx:apply`；bug 修復跳過 Step 0~1 |
-| `#end-task` | Step 6~9 | KB 更新 + 工程約束回顧 + archive + rebuild + finish-check | archive（Step 7）在 rebuild（Step 8）之前 |
+| `#start-task` | Step 2~6 | KB 讀取 + TDD/SOLID/衝突確認守門 + 實作 + 測試 | 新功能含 `/opsx:apply`；bug 修復跳過 Step 0~1 |
+| `#end-task` | Step 7~10 | KB 更新 + 工程約束回顧 + archive + rebuild + finish-check | archive（Step 8）在 rebuild（Step 9）之前 |
 
 ### 何時觸發 `/opsx:propose`
 
@@ -113,28 +144,35 @@
 
 ### 依任務類型選擇流程
 
-    新功能 / 規格變更                            Bug 修復 / 陷阱修補
-    ──────────────────────────────               ─────────────────────
-    #start-plan                                  │
-      ↓ OpenSpec 預讀 + KB 讀取                  │
-      ↓ 輸出計劃（等待確認，不寫檔）               │
-      ↓                                          │
-    （確認計劃）                                  │
-      ↓                                          │
-    /opsx:propose                                │
-      ↓ 建立 change artifacts                    │
-      ↓ tasks.md / design.md / spec.md           │
-      ↓                                          │
-    #start-task ──────────────────────────► #start-task
-      ↓ KB 讀取 (start-check)                    ↓ KB 讀取 (start-check)
-      ↓ /opsx:apply 實作 tasks                   ↓ 直接實作
-      ↓ 執行測試                                 ↓ 執行測試
-      ↓                                          ↓
-    #end-task  ────────────────────────────► #end-task
-      ↓ kb.mjs new-trap（若有新陷阱）              ↓ kb.mjs new-trap（若有新陷阱）
-      ↓ /opsx:archive（封存 change）               ↓ （跳過 /opsx:archive）
-      ↓ kb.mjs rebuild                           ↓ kb.mjs rebuild
-      ↓ kb.mjs finish-check（0 errors）           ↓ kb.mjs finish-check（0 errors）
+``` mermaid
+flowchart LR
+    subgraph Feature[新功能與規格變更]
+        F1["#start-plan<br>OpenSpec 預讀 + KB 讀取"]
+        F2["輸出計劃<br>等待確認，不寫檔"]
+        F3["/opsx:propose<br>建立 change artifacts"]
+        F4["#start-task<br>KB 讀取 + opsx apply"]
+        F5["執行測試"]
+        F6["#end-task<br>new-trap、archive、rebuild、finish-check"]
+        F1 --> F2 --> F3 --> F4 --> F5 --> F6
+    end
+
+    subgraph Bug[Bug修復與陷阱修補]
+        B1["#start-task<br>KB 讀取"]
+        B2["直接實作"]
+        B3["執行測試"]
+        B4["#end-task<br>new-trap、rebuild、finish-check"]
+        B1 --> B2 --> B3 --> B4
+    end
+
+    F4 -. "bug 修復通常從這裡開始" .-> B1
+```
+
+| 任務類型 | 建議流程 | OpenSpec change | 收尾要求 |
+|----------|----------|-----------------|----------|
+| 新功能 / 新頁面 / 新 API | `#start-plan` → `/opsx:propose` → `#start-task` → `#end-task` | 建議建立 | archive 後 rebuild / finish-check |
+| 規格變更 / 跨模組行為設計 | `#start-plan` → `/opsx:propose` → `#start-task` → `#end-task` | 必須建立 | 記錄設計決策與規格變更 |
+| 純 bug 修復 | `#start-task` → `#end-task` | 通常跳過 | 若有新陷阱，補 `new-trap` |
+| 陷阱修補 / 文件補錄 | `#start-task` → `#end-task` | 通常跳過 | 更新 KB 並跑 finish-check |
 
 ### v3.1 → v3.2 重構路線
 
@@ -179,52 +217,55 @@ v3.2 採**漸進式、非破壞**設計，v3.1 功能完全保留：
 
 ## 建立的目錄結構
 
-```
-專案根目錄/
-├── init-kb.ps1                          ← 新專案初始化腳本
-├── update-kb.ps1                        ← 既有知識庫非破壞性升級腳本
-├── opsx.bat                             ← openspec wrapper（建議不入版控）
-├── opsx.ps1                             ← openspec wrapper（建議不入版控）
-├── openspec-cheatsheet.md               ← opsx 指令速查表
-├── rtk-cheatsheet.md                    ← RTK 指令速查表（僅 -EnableRtkHints 產生）
-└── .vscode/
-    ├── settings.json                    ← Copilot prompt 路徑設定
-    ├── copilot-instructions.md          ← 單一規範來源（SSOT）
-    ├── start-task.prompt.md             ← /start-task：4 層階梯讀取
-    ├── start-plan.prompt.md             ← /start-plan：Plan 模式（讀 → 計劃 → 等待確認）
-    ├── end-task.prompt.md               ← /end-task：更新 KB + commit 訊息
-    ├── openspec/                        ← OpenSpec 行為規格系統（v3.2）
-    │   ├── config.yaml                  ← openspec CLI 組態
-    │   ├── schemas/                     ← spec JSON Schema
-    │   ├── specs/
-    │   │   └── INDEX.md                 ← 行為規格目錄（新功能前必查）
-    │   ├── changes/                     ← 進行中 change artifacts
-    │   └── archive/                     ← 已封存 change
-    └── knowledge/
-        ├── INDEX.md                     ← <80 行純導航（第 1 層）
-        ├── changelog/
-        │   └── YYYY-MM.md               ← 當月變更歷程
-        ├── agent/
-        │   ├── INDEX.md                 ← Agent 操作守門與 repair closure
-        │   └── generated/               ← repair guard facets（rebuild 自動）
-        ├── modules/                     ← 第 2 層：各模組 quickref（使用者自填）
-        ├── traps/
-        │   ├── topics-taxonomy.yml      ← 主題白名單（人工維護）
-        │   ├── topics/
-        │   │   ├── INDEX.md             ← 第 3 層：主題目錄（rebuild 自動）
-        │   │   └── {slug}.md            ← 第 4 層：主題集群（AUTO + 防呆原則）
-        │   ├── trap-NNN.md              ← 第 5 層：陷阱片段（new-trap 產生）
-        │   ├── index.jsonl              ← 機器可讀大表（自動）
-        │   ├── by-module.json           ← facet 索引（自動）
-        │   ├── by-tag.json
-        │   ├── by-topic.json
-        │   ├── by-file.json
-        │   ├── by-symptom.json
-        │   └── fts.db                   ← SQLite FTS5（自動）
-        ├── runtime/                     ← 本機 runtime failure ledger（只放摘要/hash）
-        └── scripts/
-            └── kb.mjs                   ← v3.1 CLI（純 Node ESM）
-```
+### 根目錄工具
+
+| 路徑 | 說明 |
+|------|------|
+| `init-kb.ps1` | 新專案初始化腳本 |
+| `update-kb.ps1` | 既有知識庫非破壞性升級腳本 |
+| `opsx.bat` | OpenSpec wrapper，建議不入版控 |
+| `opsx.ps1` | PowerShell 原生 OpenSpec wrapper，建議不入版控 |
+| `openspec-cheatsheet.md` | opsx 指令速查表 |
+| `rtk-cheatsheet.md` | RTK 指令速查表；僅 `-EnableRtkHints` 產生 |
+
+### `.vscode/` 工作區設定
+
+| 路徑 | 說明 |
+|------|------|
+| `.vscode/settings.json` | Copilot prompt 路徑設定 |
+| `.vscode/copilot-instructions.md` | 單一規範來源，SSOT |
+| `.vscode/start-plan.prompt.md` | Plan 模式：讀取、計劃、等待確認 |
+| `.vscode/start-task.prompt.md` | 任務啟動：Agent Guard 與 4 層階梯讀取 |
+| `.vscode/end-task.prompt.md` | 任務收尾：更新 KB、archive、finish-check、commit 訊息 |
+
+### OpenSpec 行為規格系統
+
+| 路徑 | 說明 |
+|------|------|
+| `.vscode/openspec/config.yaml` | OpenSpec CLI 組態 |
+| `.vscode/openspec/schemas/` | project-feature / project-bugfix schema |
+| `.vscode/openspec/specs/INDEX.md` | 行為規格目錄，新功能前必查 |
+| `.vscode/openspec/changes/` | 進行中 change artifacts |
+| `.vscode/openspec/changes/archive/` | 已封存 change |
+
+### Knowledge Base 知識庫
+
+| 路徑 | 說明 |
+|------|------|
+| `.vscode/knowledge/INDEX.md` | 小於 80 行的純導航，第 1 層 |
+| `.vscode/knowledge/changelog/YYYY-MM.md` | 當月變更歷程 |
+| `.vscode/knowledge/agent/INDEX.md` | Agent 操作守門、repair closure、衝突確認 |
+| `.vscode/knowledge/agent/generated/` | repair guard facets，rebuild 自動產生 |
+| `.vscode/knowledge/modules/` | 第 2 層：各模組 quickref 與 decisions |
+| `.vscode/knowledge/traps/topics-taxonomy.yml` | 主題白名單，人工維護 |
+| `.vscode/knowledge/traps/topics/INDEX.md` | 第 3 層：主題目錄，rebuild 自動產生 |
+| `.vscode/knowledge/traps/topics/{slug}.md` | 第 4 層：主題集群，AUTO 區 + 防呆原則 |
+| `.vscode/knowledge/traps/trap-NNN.md` | 第 5 層：陷阱片段，`new-trap` 產生 |
+| `.vscode/knowledge/traps/index.jsonl` | 機器可讀大表，自動產生 |
+| `.vscode/knowledge/traps/by-*.json` | by-module / by-tag / by-topic / by-file / by-symptom facet 索引 |
+| `.vscode/knowledge/traps/fts.db` | SQLite FTS5 全文檢索資料庫 |
+| `.vscode/knowledge/runtime/` | 本機 runtime failure ledger，只放摘要與 hash |
+| `.vscode/knowledge/scripts/kb.mjs` | 知識庫 CLI，純 Node ESM |
 
 ---
 
@@ -232,8 +273,17 @@ v3.2 採**漸進式、非破壞**設計，v3.1 功能完全保留：
 
 AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 
-    agent/INDEX.md  →  INDEX.md  →  modules/{m}/quickref.md  →  traps/topics/INDEX.md  →  traps/topics/{slug}.md  →  traps/trap-NNN.md
-    (操作守門)          (<80 行)         (<150 行)                (主題目錄)                (主題集群+防呆原則)        (細節)
+``` mermaid
+flowchart LR
+    Agent["agent/INDEX.md<br>操作守門"]
+    Index["INDEX.md<br>小於 80 行"]
+    Quickref["modules/{m}/quickref.md<br>小於 150 行"]
+    TopicIndex["traps/topics/INDEX.md<br>主題目錄"]
+    Topic["traps/topics/{slug}.md<br>主題集群 + 防呆原則"]
+    Trap["traps/trap-NNN.md<br>細節"]
+
+    Agent --> Index --> Quickref --> TopicIndex --> Topic --> Trap
+```
 
 啟動時建議先跑只讀守門：
 
@@ -267,20 +317,17 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 
 **1. 將腳本複製到專案根目錄**
 
-```
-專案根目錄/
-└── init-kb.ps1
-```
+將 `init-kb.ps1` 放在目標專案的根目錄，與專案的主要設定檔位於同一層。
 
 **2. 在專案根目錄執行**
 
-```powershell
+``` powershell
 .\init-kb.ps1
 ```
 
 若要同時產生 RTK terminal 輸出壓縮提示（選配，不安裝 RTK、不強制使用）：
 
-```powershell
+``` powershell
 .\init-kb.ps1 -EnableRtkHints
 ```
 
@@ -309,19 +356,19 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 
 預設 dry-run，只列出會調整哪些項目：
 
-```powershell
+``` powershell
 .\update-kb.ps1 -ProjectRoot D:\www\your-project
 ```
 
 確認後套用：
 
-```powershell
+``` powershell
 .\update-kb.ps1 -ProjectRoot D:\www\your-project -Apply
 ```
 
 若要替既有專案加入 RTK 選配提示，先 dry-run 檢查，再套用：
 
-```powershell
+``` powershell
 .\update-kb.ps1 -ProjectRoot D:\www\your-project -EnableRtkHints
 .\update-kb.ps1 -ProjectRoot D:\www\your-project -Apply -EnableRtkHints
 ```
@@ -330,7 +377,7 @@ AI 啟動任務時依下列順序讀取，**不命中就停在那一層**：
 
 若既有 `kb.mjs` 太舊，dry-run/apply 會產生 `scripts/kb.mjs.v3.2.candidate`，不覆蓋原檔。確認可接受模板替換後再執行：
 
-```powershell
+``` powershell
 .\update-kb.ps1 -ProjectRoot D:\www\your-project -Apply -ForceTemplates
 ```
 
@@ -521,7 +568,7 @@ RTK telemetry 是外部工具的 opt-in 功能。本專案不自動啟用 teleme
 
 初始化新專案：
 
-```powershell
+``` powershell
 .\init-kb.ps1 [-Force] [-SkipOpenSpec] [-EnableRtkHints]
 ```
 
@@ -534,7 +581,7 @@ RTK telemetry 是外部工具的 opt-in 功能。本專案不自動啟用 teleme
 
 升級既有知識庫：
 
-```powershell
+``` powershell
 .\update-kb.ps1 [-ProjectRoot <path>] [-Apply] [-Backup:$false] [-ForceTemplates] [-SkipRebuild] [-SkipOpenSpec] [-EnableRtkHints] [-NoReloadPrompt]
 ```
 
