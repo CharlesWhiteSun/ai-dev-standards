@@ -468,6 +468,44 @@ RTK（Rust Token Killer）是 terminal / shell 輸出壓縮工具，適合把 `g
 | `.vscode/end-task.prompt.md` | `rtk gain` 僅作本機觀察，不是 finish gate |
 | `.vscode/knowledge/.kb-version.json` | `update-kb.ps1 -EnableRtkHints` 會加入 `rtk-terminal-hints` feature marker |
 
+### Chat 工作流程（RTK 如何接入 AI agent）
+
+RTK **不是在 Chat 視窗直接輸入的命令**，而是 AI agent 執行 terminal 命令時自動選擇的輸出壓縮層。完整流程如下：
+
+**前置（一次性設定）**
+
+1. 本機安裝 RTK
+2. 對目標專案執行：`.\update-kb.ps1 -ProjectRoot D:\www\your-project -Apply -EnableRtkHints`
+3. VS Code Reload Window（Ctrl+Shift+P → Reload Window）
+
+**每次任務流程**
+
+    你在 Chat 輸入 #start-task，描述任務
+         │
+         ▼
+    AI agent 讀取 start-task.prompt.md
+    （含 RTK 指引：先確認 rtk --version，再以 rtk 前綴取代高輸出命令）
+         │
+         ▼
+    AI agent 需要執行高輸出 terminal 命令時
+    （git diff、grep、測試、build、lint、log 等）
+         │
+         ├─ rtk 可用 → 改用 rtk git diff / rtk test ... / rtk grep ...
+         │             壓縮後輸出回到 Chat context，減少 token 消耗
+         │
+         └─ rtk 不可用 → fallback 原命令，任務照常繼續
+         │
+         ▼
+    任務完成，輸入 #end-task
+    AI agent 讀取 end-task.prompt.md（rtk gain 僅供觀察，不是 finish gate）
+
+**關鍵點**
+
+- 你不需要在 Chat 自己輸入 `rtk ...`；RTK 由 AI agent 在 terminal 步驟自動決定是否使用
+- RTK 只影響 terminal 輸出壓縮；KB 讀取、OpenSpec 操作、知識庫 rebuild 不走 RTK
+- RTK 命令失敗時，AI agent 會走 `repair-record` 記錄，再 fallback 原命令
+- `start-plan.prompt.md` 在規劃階段也含 RTK 指引，適用 git / search 類輸出
+
 ### 安裝狀態檢查
 
 PowerShell：
