@@ -450,10 +450,11 @@ function Ensure-GitignoreEntries {
 
 # ---------------------------------------------------------------------------
 # Ensure-OpenSpecCheatsheet
-# Creates openspec-cheatsheet.md in project root if not present.
+# Creates .vscode/openspec-cheatsheet.md if not present.
+# Path matches init-kb.ps1 (which also writes to .vscode/).
 # ---------------------------------------------------------------------------
 function Ensure-OpenSpecCheatsheet {
-    $cheatsheetPath = Join-Path $ProjectRootFull 'openspec-cheatsheet.md'
+    $cheatsheetPath = Join-Path $VscodeDir 'openspec-cheatsheet.md'
     $content = @'
 # OpenSpec Quick Reference
 
@@ -490,7 +491,7 @@ function Ensure-OpenSpecCheatsheet {
 - `.vscode/openspec/changes/<name>/` -- change artifacts (working)
 - `.vscode/openspec/changes/archive/<name>/` -- archived changes
 '@
-    Ensure-File -Path $cheatsheetPath -Content $content -Reason 'Create openspec-cheatsheet.md'
+    Ensure-File -Path $cheatsheetPath -Content $content -Reason 'Create .vscode/openspec-cheatsheet.md'
 }
 
 # ---------------------------------------------------------------------------
